@@ -92,10 +92,14 @@ pio device monitor
 ssimTerminal/
 ├── platformio.ini          # PlatformIO configuration
 ├── include/
-│   ├── pins_config.h       # GPIO pin definitions
-│   └── lv_conf.h           # LVGL configuration
+│   ├── pins_config.h       # GPIO pin definitions for Waveshare board
+│   ├── lv_conf.h           # LVGL configuration
+│   ├── display.h           # Display driver interface
+│   └── touch.h             # Touch controller interface
 ├── src/
-│   └── main.cpp            # Main firmware entry point
+│   ├── main.cpp            # Main firmware entry point
+│   ├── display.cpp         # SH8601 QSPI display driver
+│   └── touch.cpp           # FT3168 I2C touch driver
 └── lib/                    # Local libraries
 ```
 
@@ -104,6 +108,7 @@ ssimTerminal/
 | Component | Choice |
 |-----------|--------|
 | Framework | Arduino (via PlatformIO) |
+| Display Driver | Arduino_GFX (SH8601 QSPI) |
 | Graphics | LVGL v8.3.x |
 | QR Generation | ricmoo/QRCode |
 | WebSocket Client | links2004/WebSockets |
@@ -145,12 +150,13 @@ See [SSIM Terminal Integration Proposal](https://github.com/jordancrombie/ssim/b
 - [x] Main firmware skeleton with state machine
 - [x] WebSocket client integration
 - [x] Secure storage for API key (NVS)
-- [ ] SH8601 display driver integration
-- [ ] FT3168 touch driver integration
+- [x] SH8601 display driver (via Arduino_GFX + TCA9554 expander)
+- [x] FT3168 touch driver (I2C)
+- [x] Basic UI screens (boot, idle, connecting, result, error)
 - [ ] WiFi provisioning UI
 - [ ] Pairing flow UI
 - [ ] QR code generation and display
-- [ ] Result animation screens
+- [ ] Hardware testing and pin verification
 
 ### Phase 2 (Future)
 

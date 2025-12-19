@@ -16,7 +16,11 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <lvgl.h>
+#include <qrcode.h>
+
 #include "pins_config.h"
+#include "display.h"
+#include "touch.h"
 
 // =============================================================================
 // Configuration
@@ -46,13 +50,9 @@ static TerminalState currentState = TerminalState::BOOT;
 static WebSocketsClient webSocket;
 static Preferences preferences;
 
-// Display buffer for LVGL
-static lv_disp_draw_buf_t draw_buf;
-static lv_color_t *buf1 = nullptr;
-static lv_color_t *buf2 = nullptr;
-
 // Timing
 static unsigned long lastHeartbeat = 0;
+static unsigned long lastLvglTick = 0;
 static unsigned long resultStartTime = 0;
 static unsigned long qrExpiresAt = 0;
 
@@ -70,13 +70,14 @@ static String terminalId;
 // =============================================================================
 // Forward Declarations
 // =============================================================================
-void setupDisplay();
-void setupTouch();
+void loadStoredConfig();
+void saveConfig();
 void setupWiFi();
 void connectWebSocket();
 void handleWebSocketEvent(WStype_t type, uint8_t *payload, size_t length);
 void handleServerMessage(const char *payload);
 void sendHeartbeat();
+void sendAck(const char *messageId);
 void transitionTo(TerminalState newState);
 
 // UI screens
@@ -88,30 +89,59 @@ void showQrScreen(const char *qrData, int amount, const char *currency, const ch
 void showResultScreen(const char *status, const char *message);
 void showErrorScreen(const char *message);
 
-// LVGL callbacks
-void lvgl_flush_cb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p);
-void lvgl_touchpad_read(lv_indev_drv_t *indev, lv_indev_data_t *data);
+// Audio
+void playResultSound(const char *status);
+
+// =============================================================================
+// LVGL Tick
+// =============================================================================
+static void lvgl_tick_task(void *arg) {
+    while (1) {
+        lv_tick_inc(5);
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+}
 
 // =============================================================================
 // Setup
 // =============================================================================
 void setup() {
     Serial.begin(115200);
-    Serial.printf("\n\n=== ssimTerminal v%s ===\n", FIRMWARE_VERSION);
+    delay(100);  // Give serial time to initialize
+
+    Serial.println("\n\n========================================");
+    Serial.printf("  ssimTerminal v%s\n", FIRMWARE_VERSION);
+    Serial.println("========================================");
     Serial.printf("Chip: %s, Rev: %d\n", ESP.getChipModel(), ESP.getChipRevision());
-    Serial.printf("Flash: %d MB, PSRAM: %d MB\n",
-                  ESP.getFlashChipSize() / 1024 / 1024,
-                  ESP.getPsramSize() / 1024 / 1024);
+    Serial.printf("CPU: %d MHz\n", ESP.getCpuFreqMHz());
+    Serial.printf("Flash: %d MB\n", ESP.getFlashChipSize() / 1024 / 1024);
+    Serial.printf("PSRAM: %d bytes (%d KB)\n", ESP.getPsramSize(), ESP.getPsramSize() / 1024);
+    Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
+    Serial.println("----------------------------------------");
+
+    // Initialize LVGL
+    Serial.println("Initializing LVGL...");
+    lv_init();
+
+    // Create LVGL tick task
+    xTaskCreatePinnedToCore(lvgl_tick_task, "lvgl_tick", 2048, NULL, 1, NULL, 0);
+
+    // Initialize display (SH8601)
+    if (!display_init()) {
+        Serial.println("FATAL: Display initialization failed!");
+        while (1) { delay(1000); }
+    }
+
+    // Initialize touch (FT3168)
+    if (!touch_init()) {
+        Serial.println("WARNING: Touch initialization failed - continuing without touch");
+    }
 
     // Initialize NVS for storing credentials
     preferences.begin("ssimterm", false);
     loadStoredConfig();
 
-    // Initialize LVGL
-    lv_init();
-    setupDisplay();
-    setupTouch();
-
+    // Show boot screen
     showBootScreen();
 
     // Check if we have stored credentials
@@ -120,13 +150,15 @@ void setup() {
     } else {
         transitionTo(TerminalState::CONNECTING);
     }
+
+    Serial.println("Setup complete!");
 }
 
 // =============================================================================
 // Main Loop
 // =============================================================================
 void loop() {
-    // Handle LVGL
+    // Handle LVGL (must be called frequently)
     lv_timer_handler();
 
     // Handle WebSocket
@@ -175,7 +207,7 @@ void loadStoredConfig() {
     apiKey = preferences.getString("api_key", "");
     terminalId = preferences.getString("terminal_id", "");
 
-    Serial.printf("Loaded config - Server: %s, Terminal: %s, HasKey: %s\n",
+    Serial.printf("Config loaded - Server: %s, Terminal: %s, HasKey: %s\n",
                   ssimServerUrl.isEmpty() ? "(none)" : ssimServerUrl.c_str(),
                   terminalId.isEmpty() ? "(none)" : terminalId.c_str(),
                   apiKey.isEmpty() ? "no" : "yes");
@@ -200,7 +232,7 @@ void clearConfig() {
 // State Transitions
 // =============================================================================
 void transitionTo(TerminalState newState) {
-    Serial.printf("State: %d -> %d\n", (int)currentState, (int)newState);
+    Serial.printf("State transition: %d -> %d\n", (int)currentState, (int)newState);
     currentState = newState;
 
     switch (newState) {
@@ -243,8 +275,8 @@ void transitionTo(TerminalState newState) {
 // WiFi Setup
 // =============================================================================
 void setupWiFi() {
-    // TODO: Implement WiFi provisioning UI
-    // For now, use hardcoded credentials for testing
+    // TODO: Implement proper WiFi provisioning UI
+    // For development, use hardcoded credentials
     const char *ssid = "YOUR_WIFI_SSID";
     const char *password = "YOUR_WIFI_PASSWORD";
 
@@ -255,11 +287,13 @@ void setupWiFi() {
     while (WiFi.status() != WL_CONNECTED && attempts < 30) {
         delay(500);
         Serial.print(".");
+        lv_timer_handler();  // Keep LVGL responsive
         attempts++;
     }
 
     if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("\nWiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("\nWiFi connected! IP: %s, RSSI: %d dBm\n",
+                      WiFi.localIP().toString().c_str(), WiFi.RSSI());
     } else {
         Serial.println("\nWiFi connection failed!");
         showErrorScreen("WiFi connection failed");
@@ -272,17 +306,17 @@ void setupWiFi() {
 // =============================================================================
 void connectWebSocket() {
     if (ssimServerUrl.isEmpty()) {
-        Serial.println("No server URL configured");
-        return;
+        // For development, use localhost
+        Serial.println("No server URL configured, using localhost for development");
+        webSocket.begin("192.168.1.100", 3000, "/terminal/ws");
+    } else {
+        // Parse URL and connect
+        // Expected format: wss://ssim.example.com/terminal/ws?apiKey=xxx
+        String wsUrl = "/terminal/ws?apiKey=" + apiKey;
+        // TODO: Parse host from ssimServerUrl
+        webSocket.begin("ssim.example.com", 443, wsUrl.c_str());
     }
 
-    // Parse URL and connect
-    // Expected format: wss://ssim.example.com/terminal/ws?apiKey=xxx
-    String wsUrl = ssimServerUrl + "/terminal/ws?apiKey=" + apiKey;
-
-    // For development, using ws:// (insecure)
-    // TODO: Switch to wss:// for production
-    webSocket.begin("localhost", 3000, "/terminal/ws?apiKey=" + apiKey);
     webSocket.onEvent(handleWebSocketEvent);
     webSocket.setReconnectInterval(RECONNECT_DELAY);
 
@@ -296,6 +330,7 @@ void handleWebSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
             if (currentState == TerminalState::QR_DISPLAY) {
                 // Show warning but don't clear QR yet (per SSIM team guidance)
                 // TODO: Show "Connection Lost" overlay
+                Serial.println("Connection lost during payment - maintaining QR display");
             } else if (currentState != TerminalState::PAIRING) {
                 showErrorScreen("Connection lost\nReconnecting...");
             }
@@ -308,7 +343,7 @@ void handleWebSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
             break;
 
         case WStype_TEXT:
-            Serial.printf("WebSocket message: %s\n", (char *)payload);
+            Serial.printf("WebSocket message: %.*s\n", (int)length, (char *)payload);
             handleServerMessage((char *)payload);
             break;
 
@@ -331,51 +366,40 @@ void handleServerMessage(const char *payload) {
     }
 
     const char *type = doc["type"];
+    const char *messageId = doc["messageId"] | "";
 
     if (strcmp(type, "display_qr") == 0) {
-        // Display QR code for payment
         JsonObject p = doc["payload"];
         currentPaymentId = p["paymentId"].as<String>();
         currentQrData = p["qrData"].as<String>();
         currentAmount = p["amount"];
         currentCurrency = p["currency"].as<String>();
         const char *description = p["orderDescription"] | "";
-        const char *expiresAt = p["expiresAt"] | "";
 
-        // Calculate local expiry time (simplified - should parse ISO timestamp)
-        // For now, assume 5 minute timeout
+        // Calculate local expiry time (5 minute default)
         qrExpiresAt = millis() + (5 * 60 * 1000);
 
         showQrScreen(currentQrData.c_str(), currentAmount, currentCurrency.c_str(), description);
         transitionTo(TerminalState::QR_DISPLAY);
-
-        // Send acknowledgment
-        sendAck(doc["messageId"] | "");
+        sendAck(messageId);
     }
     else if (strcmp(type, "payment_result") == 0) {
-        // Payment result
         JsonObject p = doc["payload"];
         const char *status = p["status"];
         const char *message = p["message"] | "";
 
         showResultScreen(status, message);
         transitionTo(TerminalState::RESULT);
-
-        // Play sound feedback
         playResultSound(status);
-
-        sendAck(doc["messageId"] | "");
+        sendAck(messageId);
     }
     else if (strcmp(type, "clear") == 0) {
-        // Clear display and return to idle
         transitionTo(TerminalState::IDLE);
-        sendAck(doc["messageId"] | "");
+        sendAck(messageId);
     }
     else if (strcmp(type, "config") == 0) {
-        // Configuration update
-        JsonObject p = doc["payload"];
         // TODO: Handle config updates
-        sendAck(doc["messageId"] | "");
+        sendAck(messageId);
     }
 }
 
@@ -408,137 +432,222 @@ void sendAck(const char *messageId) {
     webSocket.sendTXT(json);
 }
 
-void sendStatus() {
-    if (!webSocket.isConnected()) return;
-
-    JsonDocument doc;
-    doc["type"] = "status";
-    JsonObject payload = doc["payload"].to<JsonObject>();
-
-    const char *screenName;
-    switch (currentState) {
-        case TerminalState::IDLE:       screenName = "idle"; break;
-        case TerminalState::QR_DISPLAY: screenName = "qr_display"; break;
-        case TerminalState::RESULT:     screenName = "result"; break;
-        default:                        screenName = "other"; break;
-    }
-    payload["currentScreen"] = screenName;
-
-    if (!currentPaymentId.isEmpty()) {
-        payload["paymentId"] = currentPaymentId;
-    }
-
-    String json;
-    serializeJson(doc, json);
-    webSocket.sendTXT(json);
-}
-
 // =============================================================================
-// Display Setup (Placeholder - needs SH8601 driver)
+// UI Screens (Basic LVGL Implementation)
 // =============================================================================
-void setupDisplay() {
-    // Allocate draw buffers in PSRAM
-    size_t bufSize = LCD_WIDTH * 40;  // 40 lines at a time
-    buf1 = (lv_color_t *)ps_malloc(bufSize * sizeof(lv_color_t));
-    buf2 = (lv_color_t *)ps_malloc(bufSize * sizeof(lv_color_t));
 
-    if (!buf1 || !buf2) {
-        Serial.println("ERROR: Failed to allocate display buffers!");
-        return;
-    }
+static lv_obj_t *current_screen = nullptr;
 
-    lv_disp_draw_buf_init(&draw_buf, buf1, buf2, bufSize);
-
-    // Initialize display driver
-    static lv_disp_drv_t disp_drv;
-    lv_disp_drv_init(&disp_drv);
-    disp_drv.hor_res = LCD_WIDTH;
-    disp_drv.ver_res = LCD_HEIGHT;
-    disp_drv.flush_cb = lvgl_flush_cb;
-    disp_drv.draw_buf = &draw_buf;
-    lv_disp_drv_register(&disp_drv);
-
-    Serial.println("Display initialized");
-
-    // TODO: Initialize SH8601 QSPI display driver
-    // This requires the actual SH8601 driver library from Waveshare
-}
-
-void lvgl_flush_cb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
-    // TODO: Implement SH8601 flush
-    // This function sends pixel data to the display
-
-    // For now, just signal completion
-    lv_disp_flush_ready(disp);
-}
-
-// =============================================================================
-// Touch Setup (Placeholder - needs FT3168 driver)
-// =============================================================================
-void setupTouch() {
-    // TODO: Initialize I2C and FT3168 touch controller
-
-    static lv_indev_drv_t indev_drv;
-    lv_indev_drv_init(&indev_drv);
-    indev_drv.type = LV_INDEV_TYPE_POINTER;
-    indev_drv.read_cb = lvgl_touchpad_read;
-    lv_indev_drv_register(&indev_drv);
-
-    Serial.println("Touch initialized");
-}
-
-void lvgl_touchpad_read(lv_indev_drv_t *indev, lv_indev_data_t *data) {
-    // TODO: Read from FT3168 touch controller
-    data->state = LV_INDEV_STATE_REL;
-    data->point.x = 0;
-    data->point.y = 0;
-}
-
-// =============================================================================
-// UI Screens (Placeholders - need LVGL implementation)
-// =============================================================================
 void showBootScreen() {
     Serial.println("UI: Boot screen");
-    // TODO: Show logo and "Starting..." message
+
+    if (current_screen) lv_obj_del(current_screen);
+    current_screen = lv_obj_create(NULL);
+    lv_scr_load(current_screen);
+
+    lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
+
+    lv_obj_t *label = lv_label_create(current_screen);
+    lv_label_set_text(label, "ssimTerminal");
+    lv_obj_set_style_text_color(label, lv_color_white(), 0);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
+    lv_obj_center(label);
+
+    lv_obj_t *version = lv_label_create(current_screen);
+    lv_label_set_text_fmt(version, "v%s", FIRMWARE_VERSION);
+    lv_obj_set_style_text_color(version, lv_color_hex(0x888888), 0);
+    lv_obj_align(version, LV_ALIGN_CENTER, 0, 40);
 }
 
 void showPairingScreen() {
     Serial.println("UI: Pairing screen");
-    // TODO: Show pairing code entry UI
+
+    if (current_screen) lv_obj_del(current_screen);
+    current_screen = lv_obj_create(NULL);
+    lv_scr_load(current_screen);
+
+    lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
+
+    lv_obj_t *title = lv_label_create(current_screen);
+    lv_label_set_text(title, "Setup Required");
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 40);
+
+    lv_obj_t *msg = lv_label_create(current_screen);
+    lv_label_set_text(msg, "Configure WiFi and\nSSIM server to continue");
+    lv_obj_set_style_text_color(msg, lv_color_hex(0xAAAAAA), 0);
+    lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(msg);
+
+    // TODO: Add WiFi configuration UI
 }
 
 void showConnectingScreen() {
     Serial.println("UI: Connecting screen");
-    // TODO: Show spinner and "Connecting..." message
+
+    if (current_screen) lv_obj_del(current_screen);
+    current_screen = lv_obj_create(NULL);
+    lv_scr_load(current_screen);
+
+    lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
+
+    lv_obj_t *spinner = lv_spinner_create(current_screen, 1000, 60);
+    lv_obj_set_size(spinner, 80, 80);
+    lv_obj_align(spinner, LV_ALIGN_CENTER, 0, -20);
+
+    lv_obj_t *label = lv_label_create(current_screen);
+    lv_label_set_text(label, "Connecting...");
+    lv_obj_set_style_text_color(label, lv_color_white(), 0);
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, 60);
 }
 
 void showIdleScreen() {
     Serial.println("UI: Idle screen");
-    // TODO: Show store branding and "Ready for payment" message
+
+    if (current_screen) lv_obj_del(current_screen);
+    current_screen = lv_obj_create(NULL);
+    lv_scr_load(current_screen);
+
+    lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
+
+    lv_obj_t *title = lv_label_create(current_screen);
+    lv_label_set_text(title, "Ready for Payment");
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_center(title);
+
+    lv_obj_t *sub = lv_label_create(current_screen);
+    lv_label_set_text(sub, "Waiting for transaction...");
+    lv_obj_set_style_text_color(sub, lv_color_hex(0x888888), 0);
+    lv_obj_align(sub, LV_ALIGN_CENTER, 0, 40);
 }
 
 void showQrScreen(const char *qrData, int amount, const char *currency, const char *description) {
     Serial.printf("UI: QR screen - Amount: %d %s\n", amount, currency);
-    // TODO: Generate and display QR code with amount
+
+    if (current_screen) lv_obj_del(current_screen);
+    current_screen = lv_obj_create(NULL);
+    lv_scr_load(current_screen);
+
+    lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
+
+    // Title
+    lv_obj_t *title = lv_label_create(current_screen);
+    lv_label_set_text(title, "Scan to Pay");
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
+
+    // QR Code (placeholder - need to generate actual QR)
+    // Create a canvas for QR code
+    lv_obj_t *qr_container = lv_obj_create(current_screen);
+    lv_obj_set_size(qr_container, 200, 200);
+    lv_obj_set_style_bg_color(qr_container, lv_color_white(), 0);
+    lv_obj_set_style_border_width(qr_container, 0, 0);
+    lv_obj_set_style_radius(qr_container, 8, 0);
+    lv_obj_align(qr_container, LV_ALIGN_CENTER, 0, -20);
+
+    // TODO: Generate and display actual QR code
+    lv_obj_t *qr_placeholder = lv_label_create(qr_container);
+    lv_label_set_text(qr_placeholder, "[QR]");
+    lv_obj_set_style_text_color(qr_placeholder, lv_color_black(), 0);
+    lv_obj_center(qr_placeholder);
+
+    // Amount
+    char amount_str[32];
+    snprintf(amount_str, sizeof(amount_str), "$%.2f %s", amount / 100.0f, currency);
+    lv_obj_t *amount_label = lv_label_create(current_screen);
+    lv_label_set_text(amount_label, amount_str);
+    lv_obj_set_style_text_color(amount_label, lv_color_white(), 0);
+    lv_obj_set_style_text_font(amount_label, &lv_font_montserrat_32, 0);
+    lv_obj_align(amount_label, LV_ALIGN_BOTTOM_MID, 0, -80);
+
+    // Description
+    if (strlen(description) > 0) {
+        lv_obj_t *desc_label = lv_label_create(current_screen);
+        lv_label_set_text(desc_label, description);
+        lv_obj_set_style_text_color(desc_label, lv_color_hex(0xAAAAAA), 0);
+        lv_obj_align(desc_label, LV_ALIGN_BOTTOM_MID, 0, -50);
+    }
 }
 
 void showResultScreen(const char *status, const char *message) {
-    Serial.printf("UI: Result screen - Status: %s, Message: %s\n", status, message);
-    // TODO: Show checkmark/X/warning icon with message
+    Serial.printf("UI: Result screen - Status: %s\n", status);
+
+    if (current_screen) lv_obj_del(current_screen);
+    current_screen = lv_obj_create(NULL);
+    lv_scr_load(current_screen);
+
+    lv_color_t bg_color;
+    const char *icon_text;
+    const char *status_text;
+
+    if (strcmp(status, "approved") == 0) {
+        bg_color = lv_color_hex(0x1B5E20);  // Dark green
+        icon_text = LV_SYMBOL_OK;
+        status_text = "Payment Approved";
+    } else if (strcmp(status, "declined") == 0) {
+        bg_color = lv_color_hex(0xB71C1C);  // Dark red
+        icon_text = LV_SYMBOL_CLOSE;
+        status_text = "Payment Declined";
+    } else {
+        bg_color = lv_color_hex(0xE65100);  // Dark orange
+        icon_text = LV_SYMBOL_WARNING;
+        status_text = "Payment Error";
+    }
+
+    lv_obj_set_style_bg_color(current_screen, bg_color, 0);
+
+    // Icon
+    lv_obj_t *icon = lv_label_create(current_screen);
+    lv_label_set_text(icon, icon_text);
+    lv_obj_set_style_text_color(icon, lv_color_white(), 0);
+    lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
+    lv_obj_align(icon, LV_ALIGN_CENTER, 0, -40);
+
+    // Status text
+    lv_obj_t *status_label = lv_label_create(current_screen);
+    lv_label_set_text(status_label, status_text);
+    lv_obj_set_style_text_color(status_label, lv_color_white(), 0);
+    lv_obj_set_style_text_font(status_label, &lv_font_montserrat_24, 0);
+    lv_obj_align(status_label, LV_ALIGN_CENTER, 0, 30);
+
+    // Message
+    if (strlen(message) > 0) {
+        lv_obj_t *msg_label = lv_label_create(current_screen);
+        lv_label_set_text(msg_label, message);
+        lv_obj_set_style_text_color(msg_label, lv_color_hex(0xCCCCCC), 0);
+        lv_obj_align(msg_label, LV_ALIGN_CENTER, 0, 70);
+    }
 }
 
 void showErrorScreen(const char *message) {
     Serial.printf("UI: Error screen - %s\n", message);
-    // TODO: Show error icon and message
+
+    if (current_screen) lv_obj_del(current_screen);
+    current_screen = lv_obj_create(NULL);
+    lv_scr_load(current_screen);
+
+    lv_obj_set_style_bg_color(current_screen, lv_color_hex(0x1A1A1A), 0);
+
+    lv_obj_t *icon = lv_label_create(current_screen);
+    lv_label_set_text(icon, LV_SYMBOL_WARNING);
+    lv_obj_set_style_text_color(icon, lv_color_hex(0xFF9800), 0);
+    lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
+    lv_obj_align(icon, LV_ALIGN_CENTER, 0, -40);
+
+    lv_obj_t *label = lv_label_create(current_screen);
+    lv_label_set_text(label, message);
+    lv_obj_set_style_text_color(label, lv_color_white(), 0);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, 30);
 }
 
 // =============================================================================
-// Audio Feedback (Placeholder - needs ES8311 driver)
+// Audio Feedback
 // =============================================================================
 void playResultSound(const char *status) {
-    Serial.printf("Audio: Playing %s sound\n", status);
     // TODO: Implement audio feedback using ES8311 codec
-    // - "approved": Pleasant chime/ding
-    // - "declined": Two low tones
-    // - "failed"/"error": Alert tone
+    Serial.printf("Audio: Would play %s sound\n", status);
 }
