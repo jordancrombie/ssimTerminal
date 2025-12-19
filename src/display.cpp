@@ -57,19 +57,49 @@ static void tca9554_config(uint8_t config) {
 }
 
 /**
+ * @brief Scan I2C bus and print found devices
+ */
+static void i2c_scan() {
+    Serial.println("Scanning I2C bus...");
+    int count = 0;
+    for (uint8_t addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            Serial.printf("  Found device at 0x%02X\n", addr);
+            count++;
+        }
+    }
+    Serial.printf("I2C scan complete: %d devices found\n", count);
+}
+
+/**
  * @brief Initialize TCA9554 and reset display/touch
+ * Based on Waveshare demo code - uses P0, P1, P2 for resets
  */
 static bool init_expander() {
-    // Configure pins 0-3 as outputs (0x00 = all outputs for lower nibble)
+    // Scan I2C bus first to see what's connected
+    i2c_scan();
+
+    // Check if expander responds
+    Wire.beginTransmission(EXPANDER_I2C_ADDR);
+    uint8_t error = Wire.endTransmission();
+    if (error != 0) {
+        Serial.printf("ERROR: TCA9554 not responding at 0x%02X (error %d)\n",
+                      EXPANDER_I2C_ADDR, error);
+        Serial.println("Display reset will not work without expander!");
+        return false;
+    }
+
+    // Configure pins 0-3 as outputs (Waveshare uses P0, P1, P2)
     tca9554_config(0xF0);  // P0-P3 outputs, P4-P7 inputs
 
     // Reset sequence: assert reset (low), wait, release (high)
-    // Bit 1 = LCD_RST, Bit 2 = TP_RST
-    uint8_t outputs = 0x00;  // All low
+    // Waveshare demo: P0=?, P1=LCD_RST, P2=TP_RST
+    uint8_t outputs = 0x00;  // All low (P0, P1, P2 = LOW)
     tca9554_write(outputs);
     delay(20);
 
-    outputs = (1 << EXP_PIN_LCD_RST) | (1 << EXP_PIN_TP_RST);  // Release resets
+    outputs = 0x07;  // P0, P1, P2 = HIGH (all resets released)
     tca9554_write(outputs);
     delay(50);
 
@@ -88,16 +118,8 @@ static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t 
     uint32_t w = (area->x2 - area->x1 + 1);
     uint32_t h = (area->y2 - area->y1 + 1);
 
-    #ifdef DIRECT_MODE
-    // Direct mode - LVGL manages the full framebuffer
+    // Use draw16bitRGBBitmap for efficient block transfer
     gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t *)color_p, w, h);
-    #else
-    // Normal mode - partial updates
-    gfx->startWrite();
-    gfx->writeAddrWindow(area->x1, area->y1, w, h);
-    gfx->writePixels((uint16_t *)color_p, w * h);
-    gfx->endWrite();
-    #endif
 
     lv_disp_flush_ready(drv);
 }
@@ -141,19 +163,41 @@ bool display_init() {
         LCD_QSPI_D3
     );
 
-    // Create display driver
-    // Arduino_SH8601(bus, rst, r, ips, w, h)
+    // Create display driver (using Waveshare's modified Arduino_GFX)
+    // Arduino_SH8601(bus, rst, rotation, ips, width, height)
     // Note: rst=-1 because we handle reset via TCA9554
     gfx = new Arduino_SH8601(bus, -1 /* rst */, 0 /* rotation */, false /* ips */,
                               LCD_WIDTH, LCD_HEIGHT);
 
-    if (!gfx->begin(LCD_QSPI_FREQ)) {
+    // Initialize with default speed (let library choose)
+    if (!gfx->begin()) {
         Serial.println("ERROR: Display initialization failed");
         return false;
     }
+    Serial.println("Display driver initialized");
 
-    // Clear screen to black
-    gfx->fillScreen(BLACK);
+    // Fill with white first (like Waveshare demo)
+    gfx->fillScreen(WHITE);
+
+    // Fade in brightness (like Waveshare demo)
+    Serial.println("Fading in brightness...");
+    for (int i = 0; i <= 255; i += 5) {
+        gfx->Display_Brightness(i);
+        delay(10);
+    }
+    Serial.println("Display brightness at max");
+
+    // Visual test - draw colored rectangles to verify display works
+    Serial.println("Drawing test pattern...");
+    gfx->fillScreen(0xF800);  // RED
+    delay(500);
+    gfx->fillScreen(0x07E0);  // GREEN
+    delay(500);
+    gfx->fillScreen(0x001F);  // BLUE
+    delay(500);
+    gfx->fillScreen(0x0000);  // BLACK
+    Serial.println("Test pattern complete");
+
     Serial.printf("Display initialized: %dx%d\n", LCD_WIDTH, LCD_HEIGHT);
 
     // Allocate LVGL draw buffers in PSRAM

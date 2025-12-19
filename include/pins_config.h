@@ -40,8 +40,11 @@
 // =============================================================================
 // I2C Bus (Shared by touch, expander, PMU, sensors)
 // =============================================================================
-#define I2C_SDA             1         // I2C Data
-#define I2C_SCL             2         // I2C Clock
+// Verified working: GPIO15 (SDA), GPIO14 (SCL)
+// Devices on bus: TCA9554 (0x20), FT3168 (0x38), AXP2101 (0x34),
+//                 ES8311 (0x18), PCF85063 (0x51), QMI8658 (0x6B)
+#define I2C_SDA             15        // I2C Data
+#define I2C_SCL             14        // I2C Clock
 #define I2C_FREQ            400000    // 400kHz I2C speed
 
 // =============================================================================
@@ -94,12 +97,13 @@
 #define RTC_I2C_ADDR        0x51      // PCF85063 I2C address
 
 // =============================================================================
-// SD Card (SPI Interface via TCA9554 CS)
+// SD Card (SPI Interface)
 // =============================================================================
-#define SD_MOSI             13        // SPI MOSI
-#define SD_MISO             47        // SPI MISO
-#define SD_SCLK             14        // SPI Clock
-// SD_CS is via TCA9554 expander pin EXP_PIN_SD_CS
+// Based on Waveshare ESP32-S3-Touch-AMOLED-1.75 pinout
+#define SD_MOSI             1         // SPI MOSI (DI)
+#define SD_MISO             3         // SPI MISO (DO)
+#define SD_SCLK             2         // SPI Clock (SCK)
+#define SD_CS               41        // Chip Select (may vary on 1.8 model)
 
 // =============================================================================
 // Buttons

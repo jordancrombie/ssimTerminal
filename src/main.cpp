@@ -19,6 +19,7 @@
 #include <qrcode.h>
 
 #include "pins_config.h"
+#include "pmu.h"
 #include "display.h"
 #include "touch.h"
 
@@ -107,7 +108,13 @@ static void lvgl_tick_task(void *arg) {
 // =============================================================================
 void setup() {
     Serial.begin(115200);
-    delay(100);  // Give serial time to initialize
+
+    // Wait for USB CDC to connect (required for ESP32-S3 USB serial)
+    unsigned long startWait = millis();
+    while (!Serial && (millis() - startWait) < 3000) {
+        delay(10);
+    }
+    delay(100);  // Extra stability delay
 
     Serial.println("\n\n========================================");
     Serial.printf("  ssimTerminal v%s\n", FIRMWARE_VERSION);
@@ -118,6 +125,11 @@ void setup() {
     Serial.printf("PSRAM: %d bytes (%d KB)\n", ESP.getPsramSize(), ESP.getPsramSize() / 1024);
     Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
     Serial.println("----------------------------------------");
+
+    // Initialize PMU first - provides power to display and peripherals
+    if (!pmu_init()) {
+        Serial.println("WARNING: PMU initialization failed - display may not work!");
+    }
 
     // Initialize LVGL
     Serial.println("Initializing LVGL...");
@@ -438,12 +450,26 @@ void sendAck(const char *messageId) {
 
 static lv_obj_t *current_screen = nullptr;
 
+/**
+ * @brief Switch to a new screen, safely deleting the old one
+ * @return The new screen object
+ */
+static lv_obj_t* switchScreen() {
+    lv_obj_t *old_screen = current_screen;
+    current_screen = lv_obj_create(NULL);
+    lv_scr_load(current_screen);
+
+    // Delete old screen after loading new one
+    if (old_screen) {
+        lv_obj_del(old_screen);
+    }
+    return current_screen;
+}
+
 void showBootScreen() {
     Serial.println("UI: Boot screen");
 
-    if (current_screen) lv_obj_del(current_screen);
-    current_screen = lv_obj_create(NULL);
-    lv_scr_load(current_screen);
+    switchScreen();
 
     lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
 
@@ -462,9 +488,7 @@ void showBootScreen() {
 void showPairingScreen() {
     Serial.println("UI: Pairing screen");
 
-    if (current_screen) lv_obj_del(current_screen);
-    current_screen = lv_obj_create(NULL);
-    lv_scr_load(current_screen);
+    switchScreen();
 
     lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
 
@@ -486,9 +510,7 @@ void showPairingScreen() {
 void showConnectingScreen() {
     Serial.println("UI: Connecting screen");
 
-    if (current_screen) lv_obj_del(current_screen);
-    current_screen = lv_obj_create(NULL);
-    lv_scr_load(current_screen);
+    switchScreen();
 
     lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
 
@@ -505,9 +527,7 @@ void showConnectingScreen() {
 void showIdleScreen() {
     Serial.println("UI: Idle screen");
 
-    if (current_screen) lv_obj_del(current_screen);
-    current_screen = lv_obj_create(NULL);
-    lv_scr_load(current_screen);
+    switchScreen();
 
     lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
 
@@ -526,9 +546,7 @@ void showIdleScreen() {
 void showQrScreen(const char *qrData, int amount, const char *currency, const char *description) {
     Serial.printf("UI: QR screen - Amount: %d %s\n", amount, currency);
 
-    if (current_screen) lv_obj_del(current_screen);
-    current_screen = lv_obj_create(NULL);
-    lv_scr_load(current_screen);
+    switchScreen();
 
     lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
 
@@ -575,9 +593,7 @@ void showQrScreen(const char *qrData, int amount, const char *currency, const ch
 void showResultScreen(const char *status, const char *message) {
     Serial.printf("UI: Result screen - Status: %s\n", status);
 
-    if (current_screen) lv_obj_del(current_screen);
-    current_screen = lv_obj_create(NULL);
-    lv_scr_load(current_screen);
+    switchScreen();
 
     lv_color_t bg_color;
     const char *icon_text;
@@ -625,9 +641,7 @@ void showResultScreen(const char *status, const char *message) {
 void showErrorScreen(const char *message) {
     Serial.printf("UI: Error screen - %s\n", message);
 
-    if (current_screen) lv_obj_del(current_screen);
-    current_screen = lv_obj_create(NULL);
-    lv_scr_load(current_screen);
+    switchScreen();
 
     lv_obj_set_style_bg_color(current_screen, lv_color_hex(0x1A1A1A), 0);
 

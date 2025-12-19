@@ -54,7 +54,7 @@ static bool ft_read_reg(uint8_t reg, uint8_t *data, uint8_t len) {
         return false;
     }
 
-    Wire.requestFrom(TOUCH_I2C_ADDR, len);
+    Wire.requestFrom((uint8_t)TOUCH_I2C_ADDR, (uint8_t)len);
     for (uint8_t i = 0; i < len && Wire.available(); i++) {
         data[i] = Wire.read();
     }
