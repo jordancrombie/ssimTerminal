@@ -86,14 +86,28 @@ pio run -t upload
 pio device monitor
 ```
 
+### Project Structure
+
+```
+ssimTerminal/
+├── platformio.ini          # PlatformIO configuration
+├── include/
+│   ├── pins_config.h       # GPIO pin definitions
+│   └── lv_conf.h           # LVGL configuration
+├── src/
+│   └── main.cpp            # Main firmware entry point
+└── lib/                    # Local libraries
+```
+
 ### Tech Stack
 
 | Component | Choice |
 |-----------|--------|
 | Framework | Arduino (via PlatformIO) |
-| Graphics | LVGL |
-| QR Generation | TBD (qrcode library) |
-| WebSocket Client | TBD |
+| Graphics | LVGL v8.3.x |
+| QR Generation | ricmoo/QRCode |
+| WebSocket Client | links2004/WebSockets |
+| JSON | ArduinoJson v7 |
 
 ## WebSocket Protocol
 
@@ -126,20 +140,22 @@ See [SSIM Terminal Integration Proposal](https://github.com/jordancrombie/ssim/b
 
 ### Phase 1 (Current)
 
-- [ ] PlatformIO project setup
-- [ ] WiFi connection management
-- [ ] LVGL display initialization
+- [x] PlatformIO project setup
+- [x] LVGL configuration
+- [x] Main firmware skeleton with state machine
+- [x] WebSocket client integration
+- [x] Secure storage for API key (NVS)
+- [ ] SH8601 display driver integration
+- [ ] FT3168 touch driver integration
+- [ ] WiFi provisioning UI
 - [ ] Pairing flow UI
-- [ ] Secure storage for API key (NVS)
-- [ ] WebSocket client implementation
 - [ ] QR code generation and display
 - [ ] Result animation screens
-- [ ] Heartbeat and reconnection logic
 
 ### Phase 2 (Future)
 
 - [ ] OTA firmware updates
-- [ ] Sound feedback (beep on result)
+- [ ] Sound feedback (ES8311 audio codec)
 - [ ] Low-power/sleep modes
 - [ ] Multi-language support
 
