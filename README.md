@@ -51,11 +51,12 @@ The terminal is intentionally "dumb" - it handles display only, with all payment
 ### Terminal States
 
 ```
-BOOT → PAIRING/CONNECTING → IDLE ⇄ QR_DISPLAY → RESULT → IDLE
+BOOT → WIFI_SETUP → PAIRING → CONNECTING → IDLE ⇄ QR_DISPLAY → RESULT → IDLE
 ```
 
 - **BOOT**: Hardware initialization
-- **PAIRING**: First-time setup with SSIM server
+- **WIFI_SETUP**: WiFi network selection and password entry
+- **PAIRING**: First-time setup with SSIM server (entering pairing code)
 - **CONNECTING**: Establishing WebSocket connection
 - **IDLE**: Ready for payment, showing store branding
 - **QR_DISPLAY**: Showing QR code with amount and countdown
@@ -153,9 +154,10 @@ See [SSIM Terminal Integration Proposal](https://github.com/jordancrombie/ssim/b
 - [x] SH8601 display driver (via Arduino_GFX + TCA9554 expander)
 - [x] FT3168 touch driver (I2C)
 - [x] Basic UI screens (boot, idle, connecting, result, error)
-- [ ] WiFi provisioning UI
-- [ ] Pairing flow UI
-- [ ] QR code generation and display
+- [x] WiFi provisioning UI (network scan, selection, password keyboard)
+- [x] QR code generation and display
+- [x] Environment selector (Development/Production toggle)
+- [ ] Pairing flow UI (code entry screen)
 - [ ] Hardware testing and pin verification
 
 ### Phase 2 (Future)

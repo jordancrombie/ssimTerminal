@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2025-12-19
+
+### Added
+- **WiFi provisioning UI** - Full touch-based WiFi configuration
+  - Scans for available networks and displays scrollable list
+  - Touch keyboard for password entry
+  - Stores WiFi credentials in NVS (survives reboot)
+  - Rescan button to refresh network list
+  - Connection failure handling with retry
+- **Environment selector** - Toggle between Development and Production
+  - Blue button for Development, orange for Production
+  - Stored in NVS and persisted across reboots
+  - Changing environment clears API credentials (requires re-pairing)
+  - All server URLs configured via `ServerConfig` struct
+
+### Changed
+- **State machine** - Added `WIFI_SETUP` state for WiFi provisioning
+- **Setup flow** - Now checks for stored WiFi credentials before connecting
+  - If credentials exist: auto-connect and proceed to pairing/WebSocket
+  - If no credentials: show WiFi setup screen
+- **Server configuration** - Moved from hardcoded URLs to environment-based config
+  - Development: `ssim-dev.banksim.ca`
+  - Production: `ssim.banksim.ca`
+
+---
+
 ## [0.3.0] - 2025-12-20
 
 ### Added

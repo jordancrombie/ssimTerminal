@@ -28,7 +28,7 @@
 // =============================================================================
 // Configuration
 // =============================================================================
-#define FIRMWARE_VERSION    "0.3.0"
+#define FIRMWARE_VERSION    "0.4.0"
 #define HEARTBEAT_INTERVAL  30000   // 30 seconds
 #define RECONNECT_DELAY     5000    // 5 seconds
 #define RESULT_DISPLAY_MS   3000    // 3 seconds to show result
@@ -38,6 +38,7 @@
 // =============================================================================
 enum class TerminalState {
     BOOT,           // Hardware initialization
+    WIFI_SETUP,     // WiFi network selection and password entry
     PAIRING,        // First-time setup, entering server URL and pairing code
     CONNECTING,     // Connecting to SSIM WebSocket
     IDLE,           // Ready for payment, showing store branding
@@ -70,6 +71,51 @@ static String ssimServerUrl;
 static String apiKey;
 static String terminalId;
 
+// WiFi provisioning state
+static String wifiNetworks[20];       // List of scanned network SSIDs
+static int wifiNetworkCount = 0;      // Number of networks found
+static int selectedNetworkIndex = -1; // Currently selected network
+static String selectedSSID;           // SSID being configured
+static String enteredPassword;        // Password being entered
+
+// Stored WiFi credentials
+static String storedWifiSSID;
+static String storedWifiPassword;
+
+// Environment configuration
+enum class Environment {
+    DEVELOPMENT,
+    PRODUCTION
+};
+
+static Environment currentEnvironment = Environment::DEVELOPMENT;
+
+// Environment-specific server configuration
+struct ServerConfig {
+    const char* wsHost;
+    int wsPort;
+    const char* apiHost;
+    const char* displayName;
+};
+
+static const ServerConfig DEV_CONFIG = {
+    "ssim-dev.banksim.ca",
+    443,
+    "https://ssim-dev.banksim.ca",
+    "Development"
+};
+
+static const ServerConfig PROD_CONFIG = {
+    "ssim.banksim.ca",
+    443,
+    "https://ssim.banksim.ca",
+    "Production"
+};
+
+static const ServerConfig* getServerConfig() {
+    return (currentEnvironment == Environment::PRODUCTION) ? &PROD_CONFIG : &DEV_CONFIG;
+}
+
 // =============================================================================
 // Forward Declarations
 // =============================================================================
@@ -87,12 +133,26 @@ bool pairWithServer(const char *pairingCode);
 
 // UI screens
 void showBootScreen();
+void showWifiSetupScreen();
+void showWifiPasswordScreen();
 void showPairingScreen();
 void showConnectingScreen();
 void showIdleScreen();
 void showQrScreen(const char *qrData, int amount, const char *currency, const char *description);
 void showResultScreen(const char *status, const char *message);
 void showErrorScreen(const char *message);
+
+// WiFi provisioning
+void scanWifiNetworks();
+void connectToWifi(const char *ssid, const char *password);
+void saveWifiCredentials(const char *ssid, const char *password);
+void loadWifiCredentials();
+void setupAfterWifiConnected();
+
+// Environment
+void loadEnvironment();
+void saveEnvironment();
+void showEnvironmentScreen();
 
 // Audio
 void playResultSound(const char *status);
@@ -156,41 +216,32 @@ void setup() {
     // Initialize NVS for storing credentials
     preferences.begin("ssimterm", false);
     loadStoredConfig();
+    loadWifiCredentials();
+    loadEnvironment();
 
     // Show boot screen
     showBootScreen();
+    delay(500);  // Brief display of boot screen
 
-    // Connect to WiFi first (required for pairing and WebSocket)
-    showConnectingScreen();
-    setupWiFi();
+    // Check if we have stored WiFi credentials
+    if (!storedWifiSSID.isEmpty()) {
+        Serial.printf("Found stored WiFi credentials for: %s\n", storedWifiSSID.c_str());
+        showConnectingScreen();
 
-    if (WiFi.status() != WL_CONNECTED) {
-        showErrorScreen("WiFi connection failed");
-        transitionTo(TerminalState::ERROR);
-        Serial.println("Setup complete (WiFi failed)!");
-        return;
-    }
+        // Try to connect with stored credentials
+        connectToWifi(storedWifiSSID.c_str(), storedWifiPassword.c_str());
 
-    // Check if we have stored credentials
-    if (apiKey.isEmpty()) {
-        // No API key stored - need to pair
-        Serial.println("No API key found, attempting to pair...");
-
-        // For development: use hardcoded pairing code
-        // TODO: Replace with UI-based pairing flow
-        if (pairWithServer("558067")) {
-            Serial.println("Pairing successful, connecting to WebSocket...");
-            connectWebSocket();
-            transitionTo(TerminalState::IDLE);
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("Connected with stored WiFi credentials");
+            // Continue to pairing/WebSocket setup
+            setupAfterWifiConnected();
         } else {
-            Serial.println("Pairing failed!");
-            showErrorScreen("Pairing failed\nCheck code and retry");
-            transitionTo(TerminalState::ERROR);
+            Serial.println("Stored WiFi credentials failed, showing setup screen");
+            transitionTo(TerminalState::WIFI_SETUP);
         }
     } else {
-        Serial.printf("Using stored API key for terminal: %s\n", terminalId.c_str());
-        connectWebSocket();
-        transitionTo(TerminalState::IDLE);
+        Serial.println("No stored WiFi credentials, showing setup screen");
+        transitionTo(TerminalState::WIFI_SETUP);
     }
 
     Serial.println("Setup complete!");
@@ -255,6 +306,34 @@ void loadStoredConfig() {
                   apiKey.isEmpty() ? "no" : "yes");
 }
 
+void loadWifiCredentials() {
+    storedWifiSSID = preferences.getString("wifi_ssid", "");
+    storedWifiPassword = preferences.getString("wifi_pass", "");
+
+    Serial.printf("WiFi credentials loaded - SSID: %s, HasPassword: %s\n",
+                  storedWifiSSID.isEmpty() ? "(none)" : storedWifiSSID.c_str(),
+                  storedWifiPassword.isEmpty() ? "no" : "yes");
+}
+
+void saveWifiCredentials(const char *ssid, const char *password) {
+    preferences.putString("wifi_ssid", ssid);
+    preferences.putString("wifi_pass", password);
+    storedWifiSSID = ssid;
+    storedWifiPassword = password;
+    Serial.printf("WiFi credentials saved - SSID: %s\n", ssid);
+}
+
+void loadEnvironment() {
+    int env = preferences.getInt("environment", 0);  // 0 = development, 1 = production
+    currentEnvironment = (env == 1) ? Environment::PRODUCTION : Environment::DEVELOPMENT;
+    Serial.printf("Environment loaded: %s\n", getServerConfig()->displayName);
+}
+
+void saveEnvironment() {
+    preferences.putInt("environment", (currentEnvironment == Environment::PRODUCTION) ? 1 : 0);
+    Serial.printf("Environment saved: %s\n", getServerConfig()->displayName);
+}
+
 void saveConfig() {
     preferences.putString("server_url", ssimServerUrl);
     preferences.putString("api_key", apiKey);
@@ -282,14 +361,16 @@ void transitionTo(TerminalState newState) {
             showBootScreen();
             break;
 
+        case TerminalState::WIFI_SETUP:
+            showWifiSetupScreen();
+            break;
+
         case TerminalState::PAIRING:
             showPairingScreen();
             break;
 
         case TerminalState::CONNECTING:
             showConnectingScreen();
-            setupWiFi();
-            connectWebSocket();
             break;
 
         case TerminalState::IDLE:
@@ -314,15 +395,53 @@ void transitionTo(TerminalState newState) {
 }
 
 // =============================================================================
-// WiFi Setup
+// WiFi Provisioning
 // =============================================================================
-void setupWiFi() {
-    // TODO: Implement proper WiFi provisioning UI
-    // For development, use hardcoded credentials
-    const char *ssid = "755Avenue_IOT";
-    const char *password = "sun0sr0x";
 
+/**
+ * @brief Scan for available WiFi networks
+ */
+void scanWifiNetworks() {
+    Serial.println("Scanning for WiFi networks...");
+
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    delay(100);
+
+    int n = WiFi.scanNetworks();
+    Serial.printf("Found %d networks\n", n);
+
+    wifiNetworkCount = 0;
+    for (int i = 0; i < n && wifiNetworkCount < 20; i++) {
+        // Skip duplicates and hidden networks
+        String ssid = WiFi.SSID(i);
+        if (ssid.isEmpty()) continue;
+
+        bool duplicate = false;
+        for (int j = 0; j < wifiNetworkCount; j++) {
+            if (wifiNetworks[j] == ssid) {
+                duplicate = true;
+                break;
+            }
+        }
+
+        if (!duplicate) {
+            wifiNetworks[wifiNetworkCount] = ssid;
+            Serial.printf("  [%d] %s (RSSI: %d)\n", wifiNetworkCount, ssid.c_str(), WiFi.RSSI(i));
+            wifiNetworkCount++;
+        }
+    }
+
+    WiFi.scanDelete();
+}
+
+/**
+ * @brief Connect to a WiFi network with given credentials
+ */
+void connectToWifi(const char *ssid, const char *password) {
     Serial.printf("Connecting to WiFi: %s\n", ssid);
+
+    WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
 
     int attempts = 0;
@@ -338,8 +457,23 @@ void setupWiFi() {
                       WiFi.localIP().toString().c_str(), WiFi.RSSI());
     } else {
         Serial.println("\nWiFi connection failed!");
-        showErrorScreen("WiFi connection failed");
-        transitionTo(TerminalState::ERROR);
+    }
+}
+
+/**
+ * @brief Continue setup after WiFi is connected
+ *        Handles pairing and WebSocket connection
+ */
+void setupAfterWifiConnected() {
+    // Check if we have stored credentials
+    if (apiKey.isEmpty()) {
+        // No API key stored - need to pair
+        Serial.println("No API key found, need to pair...");
+        transitionTo(TerminalState::PAIRING);
+    } else {
+        Serial.printf("Using stored API key for terminal: %s\n", terminalId.c_str());
+        connectWebSocket();
+        transitionTo(TerminalState::IDLE);
     }
 }
 
@@ -347,19 +481,18 @@ void setupWiFi() {
 // WebSocket
 // =============================================================================
 void connectWebSocket() {
-    // Development server
-    const char* wsHost = "ssim-dev.banksim.ca";
-    const int wsPort = 443;
+    const ServerConfig* config = getServerConfig();
 
     String wsPath = "/terminal/ws";
     if (!apiKey.isEmpty()) {
         wsPath += "?apiKey=" + apiKey;
     }
 
-    Serial.printf("Connecting to WSS: %s:%d%s\n", wsHost, wsPort, wsPath.c_str());
+    Serial.printf("Connecting to WSS (%s): %s:%d%s\n",
+                  config->displayName, config->wsHost, config->wsPort, wsPath.c_str());
 
     // Use SSL for wss://
-    webSocket.beginSSL(wsHost, wsPort, wsPath.c_str());
+    webSocket.beginSSL(config->wsHost, config->wsPort, wsPath.c_str());
     webSocket.onEvent(handleWebSocketEvent);
     webSocket.setReconnectInterval(RECONNECT_DELAY);
 
@@ -370,13 +503,15 @@ void connectWebSocket() {
 // Pairing
 // =============================================================================
 bool pairWithServer(const char *pairingCode) {
-    Serial.printf("Pairing with code: %s\n", pairingCode);
+    const ServerConfig* config = getServerConfig();
+    Serial.printf("Pairing with code: %s (env: %s)\n", pairingCode, config->displayName);
 
     WiFiClientSecure client;
     client.setInsecure();  // Skip certificate validation for dev
 
     HTTPClient http;
-    http.begin(client, "https://ssim-dev.banksim.ca/api/terminal/pair");
+    String pairUrl = String(config->apiHost) + "/api/terminal/pair";
+    http.begin(client, pairUrl);
     http.addHeader("Content-Type", "application/json");
 
     // Build request body
@@ -389,7 +524,7 @@ bool pairWithServer(const char *pairingCode) {
 
     String requestBody;
     serializeJson(doc, requestBody);
-    Serial.printf("Pairing request: %s\n", requestBody.c_str());
+    Serial.printf("Pairing request to %s: %s\n", pairUrl.c_str(), requestBody.c_str());
 
     int httpCode = http.POST(requestBody);
     Serial.printf("Pairing response code: %d\n", httpCode);
@@ -413,7 +548,7 @@ bool pairWithServer(const char *pairingCode) {
             // Save to NVS
             preferences.putString("terminal_id", terminalId);
             preferences.putString("api_key", apiKey);
-            preferences.putString("server_url", "ssim-dev.banksim.ca");
+            preferences.putString("server_url", config->wsHost);
 
             Serial.printf("Paired successfully! Terminal: %s\n", terminalId.c_str());
             http.end();
@@ -636,6 +771,254 @@ void showBootScreen() {
     lv_label_set_text_fmt(version, "v%s", FIRMWARE_VERSION);
     lv_obj_set_style_text_color(version, lv_color_hex(0x888888), 0);
     lv_obj_align(version, LV_ALIGN_CENTER, 0, 40);
+}
+
+// =============================================================================
+// WiFi Setup UI
+// =============================================================================
+
+// LVGL keyboard for password entry
+static lv_obj_t *wifi_keyboard = nullptr;
+static lv_obj_t *wifi_password_ta = nullptr;
+
+/**
+ * @brief Callback when a WiFi network button is clicked
+ */
+static void wifi_network_btn_cb(lv_event_t *e) {
+    lv_obj_t *btn = lv_event_get_target(e);
+    int index = (int)(intptr_t)lv_obj_get_user_data(btn);
+
+    if (index >= 0 && index < wifiNetworkCount) {
+        selectedSSID = wifiNetworks[index];
+        selectedNetworkIndex = index;
+        Serial.printf("Selected network: %s\n", selectedSSID.c_str());
+
+        // Show password entry screen
+        showWifiPasswordScreen();
+    }
+}
+
+/**
+ * @brief Callback for rescan button
+ */
+static void wifi_rescan_btn_cb(lv_event_t *e) {
+    Serial.println("Rescanning WiFi networks...");
+    showWifiSetupScreen();  // Re-show the screen (triggers rescan)
+}
+
+/**
+ * @brief Callback for environment toggle button
+ */
+static void env_toggle_btn_cb(lv_event_t *e) {
+    // Toggle environment
+    if (currentEnvironment == Environment::DEVELOPMENT) {
+        currentEnvironment = Environment::PRODUCTION;
+    } else {
+        currentEnvironment = Environment::DEVELOPMENT;
+    }
+    saveEnvironment();
+
+    // Clear stored API key since we're changing environments
+    preferences.remove("api_key");
+    preferences.remove("terminal_id");
+    apiKey = "";
+    terminalId = "";
+    Serial.printf("Environment changed to %s, credentials cleared\n", getServerConfig()->displayName);
+
+    // Refresh the screen to show new environment
+    showWifiSetupScreen();
+}
+
+/**
+ * @brief Callback for keyboard events
+ */
+static void wifi_keyboard_cb(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    (void)lv_event_get_target(e);  // Unused
+
+    if (code == LV_EVENT_READY) {
+        // User pressed Enter/OK
+        const char *password = lv_textarea_get_text(wifi_password_ta);
+        enteredPassword = password;
+        Serial.printf("Password entered for %s\n", selectedSSID.c_str());
+
+        // Show connecting screen
+        showConnectingScreen();
+        lv_timer_handler();
+
+        // Try to connect
+        connectToWifi(selectedSSID.c_str(), enteredPassword.c_str());
+
+        if (WiFi.status() == WL_CONNECTED) {
+            // Save credentials and continue
+            saveWifiCredentials(selectedSSID.c_str(), enteredPassword.c_str());
+            setupAfterWifiConnected();
+        } else {
+            // Connection failed - go back to WiFi setup
+            showErrorScreen("Connection failed\nTap to retry");
+            // After a delay, go back to WiFi setup
+            delay(2000);
+            lv_timer_handler();
+            transitionTo(TerminalState::WIFI_SETUP);
+        }
+    } else if (code == LV_EVENT_CANCEL) {
+        // User pressed cancel - go back to network list
+        transitionTo(TerminalState::WIFI_SETUP);
+    }
+}
+
+/**
+ * @brief Show WiFi network selection screen
+ */
+void showWifiSetupScreen() {
+    Serial.println("UI: WiFi setup screen");
+
+    switchScreen();
+
+    lv_obj_set_style_bg_color(current_screen, lv_color_hex(0x1A1A1A), 0);
+
+    // Environment toggle button (top-right corner)
+    const ServerConfig* config = getServerConfig();
+    lv_obj_t *env_btn = lv_btn_create(current_screen);
+    lv_obj_set_size(env_btn, 90, 28);
+    lv_obj_align(env_btn, LV_ALIGN_TOP_RIGHT, -10, 8);
+
+    // Color based on environment
+    if (currentEnvironment == Environment::PRODUCTION) {
+        lv_obj_set_style_bg_color(env_btn, lv_color_hex(0xE65100), 0);  // Orange for production
+    } else {
+        lv_obj_set_style_bg_color(env_btn, lv_color_hex(0x1976D2), 0);  // Blue for dev
+    }
+    lv_obj_set_style_radius(env_btn, 14, 0);
+    lv_obj_add_event_cb(env_btn, env_toggle_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *env_label = lv_label_create(env_btn);
+    lv_label_set_text(env_label, config->displayName);
+    lv_obj_set_style_text_color(env_label, lv_color_white(), 0);
+    lv_obj_set_style_text_font(env_label, &lv_font_montserrat_12, 0);
+    lv_obj_center(env_label);
+
+    // Title
+    lv_obj_t *title = lv_label_create(current_screen);
+    lv_label_set_text(title, "Select WiFi Network");
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 14, 10);
+
+    // Scanning indicator
+    lv_obj_t *scanning = lv_label_create(current_screen);
+    lv_label_set_text(scanning, "Scanning...");
+    lv_obj_set_style_text_color(scanning, lv_color_hex(0x888888), 0);
+    lv_obj_align(scanning, LV_ALIGN_TOP_MID, 0, 35);
+    lv_timer_handler();
+
+    // Scan for networks
+    scanWifiNetworks();
+
+    // Hide scanning label
+    lv_obj_del(scanning);
+
+    // Create scrollable list container
+    lv_obj_t *list = lv_obj_create(current_screen);
+    lv_obj_set_size(list, 340, 320);
+    lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 45);
+    lv_obj_set_style_bg_color(list, lv_color_hex(0x2A2A2A), 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_radius(list, 8, 0);
+    lv_obj_set_style_pad_all(list, 8, 0);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+
+    if (wifiNetworkCount == 0) {
+        lv_obj_t *no_networks = lv_label_create(list);
+        lv_label_set_text(no_networks, "No networks found");
+        lv_obj_set_style_text_color(no_networks, lv_color_hex(0x888888), 0);
+    } else {
+        // Create button for each network
+        for (int i = 0; i < wifiNetworkCount; i++) {
+            lv_obj_t *btn = lv_btn_create(list);
+            lv_obj_set_size(btn, 320, 45);
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x3A3A3A), 0);
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x4A4A4A), LV_STATE_PRESSED);
+            lv_obj_set_style_radius(btn, 6, 0);
+            lv_obj_set_user_data(btn, (void*)(intptr_t)i);
+            lv_obj_add_event_cb(btn, wifi_network_btn_cb, LV_EVENT_CLICKED, NULL);
+
+            // WiFi icon
+            lv_obj_t *icon = lv_label_create(btn);
+            lv_label_set_text(icon, LV_SYMBOL_WIFI);
+            lv_obj_set_style_text_color(icon, lv_color_hex(0x4CAF50), 0);
+            lv_obj_align(icon, LV_ALIGN_LEFT_MID, 10, 0);
+
+            // SSID label
+            lv_obj_t *ssid_label = lv_label_create(btn);
+            lv_label_set_text(ssid_label, wifiNetworks[i].c_str());
+            lv_obj_set_style_text_color(ssid_label, lv_color_white(), 0);
+            lv_label_set_long_mode(ssid_label, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(ssid_label, 250);
+            lv_obj_align(ssid_label, LV_ALIGN_LEFT_MID, 45, 0);
+        }
+    }
+
+    // Rescan button at bottom
+    lv_obj_t *rescan_btn = lv_btn_create(current_screen);
+    lv_obj_set_size(rescan_btn, 140, 40);
+    lv_obj_align(rescan_btn, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_set_style_bg_color(rescan_btn, lv_color_hex(0x2196F3), 0);
+    lv_obj_add_event_cb(rescan_btn, wifi_rescan_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *rescan_label = lv_label_create(rescan_btn);
+    lv_label_set_text(rescan_label, LV_SYMBOL_REFRESH " Rescan");
+    lv_obj_set_style_text_color(rescan_label, lv_color_white(), 0);
+    lv_obj_center(rescan_label);
+}
+
+/**
+ * @brief Show WiFi password entry screen
+ */
+void showWifiPasswordScreen() {
+    Serial.printf("UI: WiFi password screen for %s\n", selectedSSID.c_str());
+
+    switchScreen();
+
+    lv_obj_set_style_bg_color(current_screen, lv_color_hex(0x1A1A1A), 0);
+
+    // Title showing selected network
+    lv_obj_t *title = lv_label_create(current_screen);
+    lv_label_set_text(title, "Enter Password");
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+
+    // Network name
+    lv_obj_t *network_name = lv_label_create(current_screen);
+    lv_label_set_text(network_name, selectedSSID.c_str());
+    lv_obj_set_style_text_color(network_name, lv_color_hex(0x4CAF50), 0);
+    lv_obj_align(network_name, LV_ALIGN_TOP_MID, 0, 35);
+
+    // Password text area
+    wifi_password_ta = lv_textarea_create(current_screen);
+    lv_obj_set_size(wifi_password_ta, 340, 45);
+    lv_obj_align(wifi_password_ta, LV_ALIGN_TOP_MID, 0, 65);
+    lv_textarea_set_placeholder_text(wifi_password_ta, "Password");
+    lv_textarea_set_password_mode(wifi_password_ta, true);
+    lv_textarea_set_one_line(wifi_password_ta, true);
+    lv_obj_set_style_bg_color(wifi_password_ta, lv_color_hex(0x2A2A2A), 0);
+    lv_obj_set_style_text_color(wifi_password_ta, lv_color_white(), 0);
+    lv_obj_set_style_border_color(wifi_password_ta, lv_color_hex(0x4CAF50), LV_STATE_FOCUSED);
+
+    // Create keyboard
+    wifi_keyboard = lv_keyboard_create(current_screen);
+    lv_obj_set_size(wifi_keyboard, 368, 280);
+    lv_obj_align(wifi_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_keyboard_set_textarea(wifi_keyboard, wifi_password_ta);
+    lv_obj_add_event_cb(wifi_keyboard, wifi_keyboard_cb, LV_EVENT_ALL, NULL);
+
+    // Style the keyboard
+    lv_obj_set_style_bg_color(wifi_keyboard, lv_color_hex(0x2A2A2A), 0);
+    lv_obj_set_style_bg_color(wifi_keyboard, lv_color_hex(0x3A3A3A), LV_PART_ITEMS);
+    lv_obj_set_style_text_color(wifi_keyboard, lv_color_white(), LV_PART_ITEMS);
 }
 
 void showPairingScreen() {

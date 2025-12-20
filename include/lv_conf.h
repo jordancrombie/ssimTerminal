@@ -83,7 +83,7 @@
 #define LV_FONT_MONTSERRAT_12   1       // Small text
 #define LV_FONT_MONTSERRAT_14   1       // Body text
 #define LV_FONT_MONTSERRAT_16   1       // Body text (larger)
-#define LV_FONT_MONTSERRAT_18   0
+#define LV_FONT_MONTSERRAT_18   1       // WiFi setup titles
 #define LV_FONT_MONTSERRAT_20   1       // Headings
 #define LV_FONT_MONTSERRAT_22   0
 #define LV_FONT_MONTSERRAT_24   1       // Large headings
