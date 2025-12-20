@@ -28,7 +28,7 @@
 // =============================================================================
 // Configuration
 // =============================================================================
-#define FIRMWARE_VERSION    "0.2.0"
+#define FIRMWARE_VERSION    "0.3.0"
 #define HEARTBEAT_INTERVAL  30000   // 30 seconds
 #define RECONNECT_DELAY     5000    // 5 seconds
 #define RESULT_DISPLAY_MS   3000    // 3 seconds to show result
@@ -516,6 +516,25 @@ void handleServerMessage(const char *payload) {
         transitionTo(TerminalState::RESULT);
         playResultSound(status);
     }
+    else if (strcmp(type, "payment_complete") == 0) {
+        // SSIM sends this when payment is finalized
+        JsonObject p = doc["payload"];
+        const char *paymentId = p["paymentId"];
+        const char *status = p["status"];  // "approved", "declined", etc.
+
+        Serial.printf("Payment complete: %s = %s\n", paymentId, status);
+
+        // Show appropriate result screen
+        if (strcmp(status, "approved") == 0) {
+            showResultScreen("approved", "Payment Successful");
+        } else if (strcmp(status, "declined") == 0) {
+            showResultScreen("declined", "Payment Declined");
+        } else {
+            showResultScreen(status, "");
+        }
+        transitionTo(TerminalState::RESULT);
+        playResultSound(status);
+    }
     else if (strcmp(type, "config_update") == 0) {
         JsonObject p = doc["payload"];
         // TODO: Handle config updates (heartbeatInterval, etc.)
@@ -535,13 +554,18 @@ void sendHeartbeat() {
     JsonDocument doc;
     doc["type"] = "heartbeat";
     JsonObject payload = doc["payload"].to<JsonObject>();
+    payload["terminalId"] = terminalId;
+    payload["firmwareVersion"] = FIRMWARE_VERSION;
     payload["uptime"] = millis() / 1000;
     payload["freeMemory"] = ESP.getFreeHeap();
     payload["wifiRssi"] = WiFi.RSSI();
+    payload["ipAddress"] = WiFi.localIP().toString();
 
     String json;
     serializeJson(doc, json);
     webSocket.sendTXT(json);
+    Serial.printf("Heartbeat sent: uptime=%lus, heap=%d, rssi=%d\n",
+                  millis() / 1000, ESP.getFreeHeap(), WiFi.RSSI());
 }
 
 void sendAck(const char *messageId) {
@@ -672,8 +696,12 @@ void showIdleScreen() {
     lv_obj_align(sub, LV_ALIGN_CENTER, 0, 40);
 }
 
+// Static buffer for QR code canvas (allocated once to avoid fragmentation)
+static lv_color_t *qr_canvas_buf = nullptr;
+static const int QR_CANVAS_SIZE = 240;  // Canvas size in pixels
+
 void showQrScreen(const char *qrData, int amount, const char *currency, const char *description) {
-    Serial.printf("UI: QR screen - Amount: %d %s\n", amount, currency);
+    Serial.printf("UI: QR screen - Amount: %d %s, URL: %s\n", amount, currency, qrData);
 
     switchScreen();
 
@@ -684,38 +712,96 @@ void showQrScreen(const char *qrData, int amount, const char *currency, const ch
     lv_label_set_text(title, "Scan to Pay");
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 15);
 
-    // QR Code (placeholder - need to generate actual QR)
-    // Create a canvas for QR code
-    lv_obj_t *qr_container = lv_obj_create(current_screen);
-    lv_obj_set_size(qr_container, 200, 200);
-    lv_obj_set_style_bg_color(qr_container, lv_color_white(), 0);
-    lv_obj_set_style_border_width(qr_container, 0, 0);
-    lv_obj_set_style_radius(qr_container, 8, 0);
-    lv_obj_align(qr_container, LV_ALIGN_CENTER, 0, -20);
+    // Generate QR Code using ricmoo/QRCode library
+    // Version 6 = 41x41 modules, can encode ~84 alphanumeric chars
+    QRCode qrcode;
+    uint8_t qrcodeData[qrcode_getBufferSize(6)];
 
-    // TODO: Generate and display actual QR code
-    lv_obj_t *qr_placeholder = lv_label_create(qr_container);
-    lv_label_set_text(qr_placeholder, "[QR]");
-    lv_obj_set_style_text_color(qr_placeholder, lv_color_black(), 0);
-    lv_obj_center(qr_placeholder);
+    int qrResult = qrcode_initText(&qrcode, qrcodeData, 6, ECC_MEDIUM, qrData);
 
-    // Amount
+    if (qrResult != 0) {
+        Serial.printf("QR generation failed: %d\n", qrResult);
+        // Show error message instead
+        lv_obj_t *error = lv_label_create(current_screen);
+        lv_label_set_text(error, "QR Code Error");
+        lv_obj_set_style_text_color(error, lv_color_hex(0xFF6666), 0);
+        lv_obj_center(error);
+        return;
+    }
+
+    Serial.printf("QR generated: %dx%d modules\n", qrcode.size, qrcode.size);
+
+    // Allocate canvas buffer if not already done
+    if (qr_canvas_buf == nullptr) {
+        qr_canvas_buf = (lv_color_t *)heap_caps_malloc(
+            QR_CANVAS_SIZE * QR_CANVAS_SIZE * sizeof(lv_color_t),
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+        );
+        if (qr_canvas_buf == nullptr) {
+            Serial.println("Failed to allocate QR canvas buffer!");
+            return;
+        }
+    }
+
+    // Create canvas for QR code
+    lv_obj_t *canvas = lv_canvas_create(current_screen);
+    lv_canvas_set_buffer(canvas, qr_canvas_buf, QR_CANVAS_SIZE, QR_CANVAS_SIZE, LV_IMG_CF_TRUE_COLOR);
+    lv_obj_align(canvas, LV_ALIGN_CENTER, 0, -15);
+
+    // Fill with white background
+    lv_canvas_fill_bg(canvas, lv_color_white(), LV_OPA_COVER);
+
+    // Calculate module size to fit in canvas with margin
+    int margin = 8;  // White border around QR
+    int availableSize = QR_CANVAS_SIZE - (margin * 2);
+    int moduleSize = availableSize / qrcode.size;
+    int qrPixelSize = moduleSize * qrcode.size;
+    int offsetX = (QR_CANVAS_SIZE - qrPixelSize) / 2;
+    int offsetY = (QR_CANVAS_SIZE - qrPixelSize) / 2;
+
+    // Draw QR code modules
+    lv_draw_rect_dsc_t rect_dsc;
+    lv_draw_rect_dsc_init(&rect_dsc);
+    rect_dsc.bg_color = lv_color_black();
+    rect_dsc.bg_opa = LV_OPA_COVER;
+
+    for (int y = 0; y < qrcode.size; y++) {
+        for (int x = 0; x < qrcode.size; x++) {
+            if (qrcode_getModule(&qrcode, x, y)) {
+                // Draw black module
+                lv_area_t area;
+                area.x1 = offsetX + (x * moduleSize);
+                area.y1 = offsetY + (y * moduleSize);
+                area.x2 = area.x1 + moduleSize - 1;
+                area.y2 = area.y1 + moduleSize - 1;
+
+                // Fill the module area with black pixels
+                for (int py = area.y1; py <= area.y2; py++) {
+                    for (int px = area.x1; px <= area.x2; px++) {
+                        lv_canvas_set_px_color(canvas, px, py, lv_color_black());
+                    }
+                }
+            }
+        }
+    }
+
+    // Amount display
     char amount_str[32];
     snprintf(amount_str, sizeof(amount_str), "$%.2f %s", amount / 100.0f, currency);
     lv_obj_t *amount_label = lv_label_create(current_screen);
     lv_label_set_text(amount_label, amount_str);
     lv_obj_set_style_text_color(amount_label, lv_color_white(), 0);
     lv_obj_set_style_text_font(amount_label, &lv_font_montserrat_32, 0);
-    lv_obj_align(amount_label, LV_ALIGN_BOTTOM_MID, 0, -80);
+    lv_obj_align(amount_label, LV_ALIGN_BOTTOM_MID, 0, -60);
 
-    // Description
-    if (strlen(description) > 0) {
+    // Description (if provided)
+    if (description && strlen(description) > 0) {
         lv_obj_t *desc_label = lv_label_create(current_screen);
         lv_label_set_text(desc_label, description);
         lv_obj_set_style_text_color(desc_label, lv_color_hex(0xAAAAAA), 0);
-        lv_obj_align(desc_label, LV_ALIGN_BOTTOM_MID, 0, -50);
+        lv_obj_align(desc_label, LV_ALIGN_BOTTOM_MID, 0, -30);
     }
 }
 

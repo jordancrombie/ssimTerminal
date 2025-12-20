@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2025-12-20
+
+### Added
+- **QR code display** - Generates and displays QR codes for payment URLs
+  - Uses ricmoo/QRCode library (Version 6, 41x41 modules)
+  - 240x240 pixel canvas with PSRAM allocation
+  - Shows amount and currency below QR code
+- **payment_complete handler** - Handles payment completion from SSIM server
+  - Shows "Payment Successful" (green) or "Payment Declined" (red) screen
+  - Returns to idle after 3 seconds
+- **Enhanced heartbeat** - Now includes terminalId, firmwareVersion, ipAddress
+  - Helps SSIM server track terminal status and update device info
+
+### Fixed
+- **Terminal offline status** - Added terminalId to heartbeat for proper tracking
+
+---
+
 ## [0.2.0] - 2025-12-19
 
 ### Added
