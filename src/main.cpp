@@ -260,16 +260,18 @@ void loop() {
         webSocket.loop();
     }
 
+    // Send periodic heartbeat in all connected states
+    if (currentState == TerminalState::IDLE ||
+        currentState == TerminalState::QR_DISPLAY ||
+        currentState == TerminalState::RESULT) {
+        if (millis() - lastHeartbeat >= HEARTBEAT_INTERVAL) {
+            sendHeartbeat();
+            lastHeartbeat = millis();
+        }
+    }
+
     // State-specific logic
     switch (currentState) {
-        case TerminalState::IDLE:
-            // Send periodic heartbeat
-            if (millis() - lastHeartbeat >= HEARTBEAT_INTERVAL) {
-                sendHeartbeat();
-                lastHeartbeat = millis();
-            }
-            break;
-
         case TerminalState::QR_DISPLAY:
             // Check for local timeout
             if (qrExpiresAt > 0 && millis() >= qrExpiresAt) {
@@ -766,16 +768,43 @@ void showBootScreen() {
 
     lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
 
-    lv_obj_t *label = lv_label_create(current_screen);
-    lv_label_set_text(label, "ssimTerminal");
-    lv_obj_set_style_text_color(label, lv_color_white(), 0);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
-    lv_obj_center(label);
+    // Logo container with subtle glow effect
+    lv_obj_t *logo_circle = lv_obj_create(current_screen);
+    lv_obj_set_size(logo_circle, 120, 120);
+    lv_obj_align(logo_circle, LV_ALIGN_CENTER, 0, -60);
+    lv_obj_set_style_bg_color(logo_circle, lv_color_hex(0x1976D2), 0);  // Blue
+    lv_obj_set_style_radius(logo_circle, 60, 0);  // Full circle
+    lv_obj_set_style_border_width(logo_circle, 0, 0);
+    lv_obj_set_style_shadow_width(logo_circle, 40, 0);
+    lv_obj_set_style_shadow_color(logo_circle, lv_color_hex(0x1976D2), 0);
+    lv_obj_set_style_shadow_opa(logo_circle, LV_OPA_40, 0);
 
+    // Dollar sign inside circle
+    lv_obj_t *dollar = lv_label_create(logo_circle);
+    lv_label_set_text(dollar, "$");
+    lv_obj_set_style_text_color(dollar, lv_color_white(), 0);
+    lv_obj_set_style_text_font(dollar, &lv_font_montserrat_48, 0);
+    lv_obj_center(dollar);
+
+    // App name
+    lv_obj_t *name = lv_label_create(current_screen);
+    lv_label_set_text(name, "ssimTerminal");
+    lv_obj_set_style_text_color(name, lv_color_white(), 0);
+    lv_obj_set_style_text_font(name, &lv_font_montserrat_24, 0);
+    lv_obj_align(name, LV_ALIGN_CENTER, 0, 30);
+
+    // Tagline
+    lv_obj_t *tagline = lv_label_create(current_screen);
+    lv_label_set_text(tagline, "Payment Terminal");
+    lv_obj_set_style_text_color(tagline, lv_color_hex(0x666666), 0);
+    lv_obj_set_style_text_font(tagline, &lv_font_montserrat_14, 0);
+    lv_obj_align(tagline, LV_ALIGN_CENTER, 0, 60);
+
+    // Version at bottom
     lv_obj_t *version = lv_label_create(current_screen);
     lv_label_set_text_fmt(version, "v%s", FIRMWARE_VERSION);
-    lv_obj_set_style_text_color(version, lv_color_hex(0x888888), 0);
-    lv_obj_align(version, LV_ALIGN_CENTER, 0, 40);
+    lv_obj_set_style_text_color(version, lv_color_hex(0x444444), 0);
+    lv_obj_align(version, LV_ALIGN_BOTTOM_MID, 0, -20);
 }
 
 // =============================================================================
@@ -1317,46 +1346,75 @@ void showResultScreen(const char *status, const char *message) {
     switchScreen();
 
     lv_color_t bg_color;
+    lv_color_t icon_bg_color;
     const char *icon_text;
     const char *status_text;
 
     if (strcmp(status, "approved") == 0) {
-        bg_color = lv_color_hex(0x1B5E20);  // Dark green
+        bg_color = lv_color_hex(0x0D3B0D);       // Very dark green background
+        icon_bg_color = lv_color_hex(0x2E7D32); // Green circle
         icon_text = LV_SYMBOL_OK;
         status_text = "Payment Approved";
     } else if (strcmp(status, "declined") == 0) {
-        bg_color = lv_color_hex(0xB71C1C);  // Dark red
+        bg_color = lv_color_hex(0x3B0D0D);       // Very dark red background
+        icon_bg_color = lv_color_hex(0xC62828); // Red circle
         icon_text = LV_SYMBOL_CLOSE;
         status_text = "Payment Declined";
+    } else if (strcmp(status, "cancelled") == 0) {
+        bg_color = lv_color_hex(0x1A1A1A);       // Dark gray background
+        icon_bg_color = lv_color_hex(0x616161); // Gray circle
+        icon_text = LV_SYMBOL_CLOSE;
+        status_text = "Payment Cancelled";
+    } else if (strcmp(status, "expired") == 0) {
+        bg_color = lv_color_hex(0x2B1A00);       // Very dark orange background
+        icon_bg_color = lv_color_hex(0xE65100); // Orange circle
+        icon_text = LV_SYMBOL_REFRESH;
+        status_text = "Payment Expired";
     } else {
-        bg_color = lv_color_hex(0xE65100);  // Dark orange
+        bg_color = lv_color_hex(0x2B1A00);       // Very dark orange background
+        icon_bg_color = lv_color_hex(0xE65100); // Orange circle
         icon_text = LV_SYMBOL_WARNING;
         status_text = "Payment Error";
     }
 
     lv_obj_set_style_bg_color(current_screen, bg_color, 0);
 
-    // Icon
-    lv_obj_t *icon = lv_label_create(current_screen);
+    // Circular background for icon
+    lv_obj_t *icon_circle = lv_obj_create(current_screen);
+    lv_obj_set_size(icon_circle, 140, 140);
+    lv_obj_align(icon_circle, LV_ALIGN_CENTER, 0, -60);
+    lv_obj_set_style_bg_color(icon_circle, icon_bg_color, 0);
+    lv_obj_set_style_radius(icon_circle, 70, 0);  // Full circle
+    lv_obj_set_style_border_width(icon_circle, 0, 0);
+    lv_obj_set_style_shadow_width(icon_circle, 30, 0);
+    lv_obj_set_style_shadow_color(icon_circle, icon_bg_color, 0);
+    lv_obj_set_style_shadow_opa(icon_circle, LV_OPA_50, 0);
+
+    // Icon inside circle
+    lv_obj_t *icon = lv_label_create(icon_circle);
     lv_label_set_text(icon, icon_text);
     lv_obj_set_style_text_color(icon, lv_color_white(), 0);
     lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
-    lv_obj_align(icon, LV_ALIGN_CENTER, 0, -40);
+    lv_obj_center(icon);
 
     // Status text
     lv_obj_t *status_label = lv_label_create(current_screen);
     lv_label_set_text(status_label, status_text);
     lv_obj_set_style_text_color(status_label, lv_color_white(), 0);
     lv_obj_set_style_text_font(status_label, &lv_font_montserrat_24, 0);
-    lv_obj_align(status_label, LV_ALIGN_CENTER, 0, 30);
+    lv_obj_align(status_label, LV_ALIGN_CENTER, 0, 55);
 
-    // Message
+    // Message (if provided)
     if (strlen(message) > 0) {
         lv_obj_t *msg_label = lv_label_create(current_screen);
         lv_label_set_text(msg_label, message);
-        lv_obj_set_style_text_color(msg_label, lv_color_hex(0xCCCCCC), 0);
-        lv_obj_align(msg_label, LV_ALIGN_CENTER, 0, 70);
+        lv_obj_set_style_text_color(msg_label, lv_color_hex(0xAAAAAA), 0);
+        lv_obj_set_style_text_align(msg_label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(msg_label, LV_ALIGN_CENTER, 0, 95);
     }
+
+    // Play audio feedback
+    playResultSound(status);
 }
 
 void showErrorScreen(const char *message) {

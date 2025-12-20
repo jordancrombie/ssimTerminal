@@ -21,6 +21,15 @@ All notable changes to this project will be documented in this file.
   - Instructions for where to get the code (SSIM Settings > Terminals)
   - Back button to return to WiFi setup
   - Environment indicator showing current server
+- **Polished result screens** - Enhanced payment outcome displays
+  - Circular icon backgrounds with glow effects
+  - Color-coded themes: green (approved), red (declined), gray (cancelled), orange (expired/error)
+  - Added support for cancelled and expired status types
+- **New boot screen** - Professional branded splash screen
+  - Blue circle with dollar sign ($) logo
+  - "ssimTerminal" title with "Payment Terminal" tagline
+  - Version number at bottom
+  - Subtle glow effect on logo
 
 ### Changed
 - **State machine** - Added `WIFI_SETUP` state for WiFi provisioning
@@ -30,6 +39,8 @@ All notable changes to this project will be documented in this file.
 - **Server configuration** - Moved from hardcoded URLs to environment-based config
   - Development: `ssim-dev.banksim.ca`
   - Production: `ssim.banksim.ca`
+- **Heartbeat logic** - Now sends heartbeats in all connected states (IDLE, QR_DISPLAY, RESULT)
+  - Ensures server always knows terminal is alive during payment flow
 
 ### Fixed
 - **Touch driver reliability** - Multiple improvements to FT3168 touch handling
