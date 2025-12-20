@@ -38,7 +38,8 @@
 // =============================================================================
 enum class TerminalState {
     BOOT,           // Hardware initialization
-    WIFI_SETUP,     // WiFi network selection and password entry
+    WIFI_SETUP,     // WiFi network selection
+    WIFI_PASSWORD,  // WiFi password entry (separate state to prevent accidental navigation)
     PAIRING,        // First-time setup, entering server URL and pairing code
     CONNECTING,     // Connecting to SSIM WebSocket
     IDLE,           // Ready for payment, showing store branding
@@ -363,6 +364,10 @@ void transitionTo(TerminalState newState) {
 
         case TerminalState::WIFI_SETUP:
             showWifiSetupScreen();
+            break;
+
+        case TerminalState::WIFI_PASSWORD:
+            showWifiPasswordScreen();
             break;
 
         case TerminalState::PAIRING:
@@ -793,8 +798,8 @@ static void wifi_network_btn_cb(lv_event_t *e) {
         selectedNetworkIndex = index;
         Serial.printf("Selected network: %s\n", selectedSSID.c_str());
 
-        // Show password entry screen
-        showWifiPasswordScreen();
+        // Transition to password entry state
+        transitionTo(TerminalState::WIFI_PASSWORD);
     }
 }
 
@@ -830,17 +835,25 @@ static void env_toggle_btn_cb(lv_event_t *e) {
 }
 
 /**
+ * @brief Callback for back button on password screen
+ */
+static void wifi_back_btn_cb(lv_event_t *e) {
+    Serial.println("Back button pressed - returning to network list");
+    transitionTo(TerminalState::WIFI_SETUP);
+}
+
+/**
  * @brief Callback for keyboard events
  */
 static void wifi_keyboard_cb(lv_event_t *e) {
     lv_event_code_t code = lv_event_get_code(e);
-    (void)lv_event_get_target(e);  // Unused
 
+    // Only handle specific events we care about
     if (code == LV_EVENT_READY) {
         // User pressed Enter/OK
         const char *password = lv_textarea_get_text(wifi_password_ta);
         enteredPassword = password;
-        Serial.printf("Password entered for %s\n", selectedSSID.c_str());
+        Serial.printf("Keyboard OK pressed - connecting to %s\n", selectedSSID.c_str());
 
         // Show connecting screen
         showConnectingScreen();
@@ -862,9 +875,11 @@ static void wifi_keyboard_cb(lv_event_t *e) {
             transitionTo(TerminalState::WIFI_SETUP);
         }
     } else if (code == LV_EVENT_CANCEL) {
-        // User pressed cancel - go back to network list
+        // User pressed keyboard cancel button - go back to network list
+        Serial.println("Keyboard cancel pressed - returning to network list");
         transitionTo(TerminalState::WIFI_SETUP);
     }
+    // Ignore all other events (LV_EVENT_PRESSED, LV_EVENT_VALUE_CHANGED, etc.)
 }
 
 /**
@@ -984,23 +999,36 @@ void showWifiPasswordScreen() {
 
     lv_obj_set_style_bg_color(current_screen, lv_color_hex(0x1A1A1A), 0);
 
+    // Back button (top-left)
+    lv_obj_t *back_btn = lv_btn_create(current_screen);
+    lv_obj_set_size(back_btn, 70, 32);
+    lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 10, 8);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x424242), 0);
+    lv_obj_set_style_radius(back_btn, 6, 0);
+    lv_obj_add_event_cb(back_btn, wifi_back_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *back_label = lv_label_create(back_btn);
+    lv_label_set_text(back_label, LV_SYMBOL_LEFT " Back");
+    lv_obj_set_style_text_color(back_label, lv_color_white(), 0);
+    lv_obj_center(back_label);
+
     // Title showing selected network
     lv_obj_t *title = lv_label_create(current_screen);
     lv_label_set_text(title, "Enter Password");
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 20, 10);
 
     // Network name
     lv_obj_t *network_name = lv_label_create(current_screen);
     lv_label_set_text(network_name, selectedSSID.c_str());
     lv_obj_set_style_text_color(network_name, lv_color_hex(0x4CAF50), 0);
-    lv_obj_align(network_name, LV_ALIGN_TOP_MID, 0, 35);
+    lv_obj_align(network_name, LV_ALIGN_TOP_MID, 0, 38);
 
     // Password text area
     wifi_password_ta = lv_textarea_create(current_screen);
     lv_obj_set_size(wifi_password_ta, 340, 45);
-    lv_obj_align(wifi_password_ta, LV_ALIGN_TOP_MID, 0, 65);
+    lv_obj_align(wifi_password_ta, LV_ALIGN_TOP_MID, 0, 70);
     lv_textarea_set_placeholder_text(wifi_password_ta, "Password");
     lv_textarea_set_password_mode(wifi_password_ta, true);
     lv_textarea_set_one_line(wifi_password_ta, true);

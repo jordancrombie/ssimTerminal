@@ -126,10 +126,8 @@ bool touch_init() {
     // Set touch threshold (optional)
     // ft_write_reg(FT_REG_THGROUP, 22);
 
-    // Configure touch interrupt (if using)
-    if (TOUCH_INT >= 0) {
-        pinMode(TOUCH_INT, INPUT);
-    }
+    // Note: Not using interrupt pin (GPIO 3 conflicts with SD_MISO)
+    // Touch is polled via I2C instead
 
     // Initialize LVGL input device driver
     lv_indev_drv_init(&indev_drv);
@@ -153,18 +151,11 @@ bool touch_read(uint16_t *x, uint16_t *y, bool *pressed) {
         return false;
     }
 
-    // Check for interrupt if pin is configured (faster)
-    if (TOUCH_INT >= 0) {
-        if (digitalRead(TOUCH_INT) == HIGH) {
-            // No touch event
-            *pressed = false;
-            return true;
-        }
-    }
-
-    // Read touch status
+    // Poll touch controller directly (interrupt pin has conflict with SD_MISO)
+    // Read touch status register
     uint8_t buf[7];
     if (!ft_read_reg(FT_REG_TD_STATUS, buf, 7)) {
+        *pressed = false;
         return false;
     }
 
@@ -175,13 +166,31 @@ bool touch_read(uint16_t *x, uint16_t *y, bool *pressed) {
         return true;
     }
 
+    // Check event flag (bits 6-7 of buf[1])
+    // 0 = Press down, 1 = Lift up, 2 = Contact, 3 = Reserved
+    uint8_t event_flag = (buf[1] >> 6) & 0x03;
+    if (event_flag == 1 || event_flag == 3) {
+        // Lift up or reserved - not a valid press
+        *pressed = false;
+        return true;
+    }
+
     // Parse first touch point
     // X: buf[1] bits 0-3 = high, buf[2] = low
     // Y: buf[3] bits 0-3 = high, buf[4] = low
     uint16_t raw_x = ((buf[1] & 0x0F) << 8) | buf[2];
     uint16_t raw_y = ((buf[3] & 0x0F) << 8) | buf[4];
 
-    // Clamp to display bounds
+    // Filter out edge touches that might be noise (within 5 pixels of edge)
+    const uint16_t EDGE_MARGIN = 5;
+    if (raw_x < EDGE_MARGIN || raw_x >= (LCD_WIDTH - EDGE_MARGIN) ||
+        raw_y < EDGE_MARGIN || raw_y >= (LCD_HEIGHT - EDGE_MARGIN)) {
+        // Edge touch - might be noise, ignore it
+        *pressed = false;
+        return true;
+    }
+
+    // Clamp to display bounds (shouldn't be needed now but keep for safety)
     if (raw_x >= LCD_WIDTH) raw_x = LCD_WIDTH - 1;
     if (raw_y >= LCD_HEIGHT) raw_y = LCD_HEIGHT - 1;
 

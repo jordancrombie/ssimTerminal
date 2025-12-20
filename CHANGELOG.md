@@ -26,6 +26,14 @@ All notable changes to this project will be documented in this file.
   - Development: `ssim-dev.banksim.ca`
   - Production: `ssim.banksim.ca`
 
+### Fixed
+- **Touch driver reliability** - Multiple improvements to FT3168 touch handling
+  - Switched from interrupt-based to polling (GPIO 3 conflict with SD_MISO)
+  - Added event flag checking (reject lift-up and reserved events)
+  - Added edge filtering (5px margin to prevent phantom touches near screen edges)
+  - Added separate `WIFI_PASSWORD` state to prevent accidental navigation
+  - Added visible "Back" button on password screen for easier navigation
+
 ---
 
 ## [0.3.0] - 2025-12-20
