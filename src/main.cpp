@@ -786,6 +786,10 @@ void showBootScreen() {
 static lv_obj_t *wifi_keyboard = nullptr;
 static lv_obj_t *wifi_password_ta = nullptr;
 
+// LVGL keyboard for pairing code entry
+static lv_obj_t *pairing_keyboard = nullptr;
+static lv_obj_t *pairing_code_ta = nullptr;
+
 /**
  * @brief Callback when a WiFi network button is clicked
  */
@@ -1049,26 +1053,117 @@ void showWifiPasswordScreen() {
     lv_obj_set_style_text_color(wifi_keyboard, lv_color_white(), LV_PART_ITEMS);
 }
 
+/**
+ * @brief Callback for pairing keyboard events
+ */
+static void pairing_keyboard_cb(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+
+    if (code == LV_EVENT_READY) {
+        // User pressed Enter/OK
+        const char *pairingCode = lv_textarea_get_text(pairing_code_ta);
+        Serial.printf("Pairing code entered: %s\n", pairingCode);
+
+        if (strlen(pairingCode) < 4) {
+            // Code too short
+            Serial.println("Pairing code too short");
+            return;
+        }
+
+        // Show connecting screen
+        showConnectingScreen();
+        lv_timer_handler();
+
+        // Try to pair with server
+        if (pairWithServer(pairingCode)) {
+            // Success - connect WebSocket and go to idle
+            connectWebSocket();
+            transitionTo(TerminalState::IDLE);
+        } else {
+            // Failed - show error and return to pairing screen
+            showErrorScreen("Pairing failed\nCheck code and try again");
+            delay(2000);
+            lv_timer_handler();
+            transitionTo(TerminalState::PAIRING);
+        }
+    } else if (code == LV_EVENT_CANCEL) {
+        // User pressed cancel - go back to WiFi setup
+        Serial.println("Pairing cancelled - returning to WiFi setup");
+        transitionTo(TerminalState::WIFI_SETUP);
+    }
+}
+
 void showPairingScreen() {
     Serial.println("UI: Pairing screen");
 
     switchScreen();
 
-    lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(current_screen, lv_color_hex(0x1A1A1A), 0);
 
+    // Back button (top-left) - return to WiFi setup
+    lv_obj_t *back_btn = lv_btn_create(current_screen);
+    lv_obj_set_size(back_btn, 70, 32);
+    lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 10, 8);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x424242), 0);
+    lv_obj_set_style_radius(back_btn, 6, 0);
+    lv_obj_add_event_cb(back_btn, [](lv_event_t *e) {
+        Serial.println("Back to WiFi setup");
+        transitionTo(TerminalState::WIFI_SETUP);
+    }, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *back_label = lv_label_create(back_btn);
+    lv_label_set_text(back_label, LV_SYMBOL_LEFT " Back");
+    lv_obj_set_style_text_color(back_label, lv_color_white(), 0);
+    lv_obj_center(back_label);
+
+    // Environment indicator (top-right)
+    const ServerConfig* config = getServerConfig();
+    lv_obj_t *env_label = lv_label_create(current_screen);
+    lv_label_set_text(env_label, config->displayName);
+    lv_obj_set_style_text_color(env_label,
+        currentEnvironment == Environment::PRODUCTION ? lv_color_hex(0xE65100) : lv_color_hex(0x1976D2), 0);
+    lv_obj_set_style_text_font(env_label, &lv_font_montserrat_12, 0);
+    lv_obj_align(env_label, LV_ALIGN_TOP_RIGHT, -14, 14);
+
+    // Title
     lv_obj_t *title = lv_label_create(current_screen);
-    lv_label_set_text(title, "Setup Required");
+    lv_label_set_text(title, "Enter Pairing Code");
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 40);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
 
-    lv_obj_t *msg = lv_label_create(current_screen);
-    lv_label_set_text(msg, "Configure WiFi and\nSSIM server to continue");
-    lv_obj_set_style_text_color(msg, lv_color_hex(0xAAAAAA), 0);
-    lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_center(msg);
+    // Instructions
+    lv_obj_t *instructions = lv_label_create(current_screen);
+    lv_label_set_text(instructions, "Get pairing code from SSIM\nSettings > Terminals > Add Terminal");
+    lv_obj_set_style_text_color(instructions, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_align(instructions, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(instructions, LV_ALIGN_TOP_MID, 0, 38);
 
-    // TODO: Add WiFi configuration UI
+    // Pairing code text area
+    pairing_code_ta = lv_textarea_create(current_screen);
+    lv_obj_set_size(pairing_code_ta, 280, 55);
+    lv_obj_align(pairing_code_ta, LV_ALIGN_TOP_MID, 0, 90);
+    lv_textarea_set_placeholder_text(pairing_code_ta, "XXXXXX");
+    lv_textarea_set_one_line(pairing_code_ta, true);
+    lv_textarea_set_max_length(pairing_code_ta, 12);
+    lv_obj_set_style_bg_color(pairing_code_ta, lv_color_hex(0x2A2A2A), 0);
+    lv_obj_set_style_text_color(pairing_code_ta, lv_color_white(), 0);
+    lv_obj_set_style_text_font(pairing_code_ta, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_align(pairing_code_ta, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_border_color(pairing_code_ta, lv_color_hex(0x4CAF50), LV_STATE_FOCUSED);
+
+    // Create keyboard (number mode for pairing codes)
+    pairing_keyboard = lv_keyboard_create(current_screen);
+    lv_obj_set_size(pairing_keyboard, 368, 260);
+    lv_obj_align(pairing_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_keyboard_set_textarea(pairing_keyboard, pairing_code_ta);
+    lv_keyboard_set_mode(pairing_keyboard, LV_KEYBOARD_MODE_TEXT_UPPER);  // Uppercase for codes
+    lv_obj_add_event_cb(pairing_keyboard, pairing_keyboard_cb, LV_EVENT_ALL, NULL);
+
+    // Style the keyboard
+    lv_obj_set_style_bg_color(pairing_keyboard, lv_color_hex(0x2A2A2A), 0);
+    lv_obj_set_style_bg_color(pairing_keyboard, lv_color_hex(0x3A3A3A), LV_PART_ITEMS);
+    lv_obj_set_style_text_color(pairing_keyboard, lv_color_white(), LV_PART_ITEMS);
 }
 
 void showConnectingScreen() {

@@ -157,7 +157,7 @@ See [SSIM Terminal Integration Proposal](https://github.com/jordancrombie/ssim/b
 - [x] WiFi provisioning UI (network scan, selection, password keyboard)
 - [x] QR code generation and display
 - [x] Environment selector (Development/Production toggle)
-- [ ] Pairing flow UI (code entry screen)
+- [x] Pairing flow UI (code entry screen)
 - [ ] Hardware testing and pin verification
 
 ### Phase 2 (Future)

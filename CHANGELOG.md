@@ -16,6 +16,11 @@ All notable changes to this project will be documented in this file.
   - Stored in NVS and persisted across reboots
   - Changing environment clears API credentials (requires re-pairing)
   - All server URLs configured via `ServerConfig` struct
+- **Pairing flow UI** - Code entry screen for registering terminal with SSIM
+  - Large text entry field for pairing codes
+  - Instructions for where to get the code (SSIM Settings > Terminals)
+  - Back button to return to WiFi setup
+  - Environment indicator showing current server
 
 ### Changed
 - **State machine** - Added `WIFI_SETUP` state for WiFi provisioning
