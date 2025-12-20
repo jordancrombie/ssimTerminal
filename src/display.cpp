@@ -187,16 +187,8 @@ bool display_init() {
     }
     Serial.println("Display brightness at max");
 
-    // Visual test - draw colored rectangles to verify display works
-    Serial.println("Drawing test pattern...");
-    gfx->fillScreen(0xF800);  // RED
-    delay(500);
-    gfx->fillScreen(0x07E0);  // GREEN
-    delay(500);
-    gfx->fillScreen(0x001F);  // BLUE
-    delay(500);
+    // Clear to black before LVGL takes over
     gfx->fillScreen(0x0000);  // BLACK
-    Serial.println("Test pattern complete");
 
     Serial.printf("Display initialized: %dx%d\n", LCD_WIDTH, LCD_HEIGHT);
 
@@ -239,10 +231,9 @@ bool display_init() {
 }
 
 void display_set_brightness(uint8_t brightness) {
-    // AMOLED brightness is typically controlled via commands
-    // For SH8601, this may require specific command sequences
-    // TODO: Implement brightness control via display commands
-    Serial.printf("Display brightness set to: %d\n", brightness);
+    if (gfx) {
+        gfx->Display_Brightness(brightness);
+    }
 }
 
 void display_power(bool on) {

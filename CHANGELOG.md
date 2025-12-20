@@ -30,6 +30,8 @@ All notable changes to this project will be documented in this file.
   - "ssimTerminal" title with "Payment Terminal" tagline
   - Version number at bottom
   - Subtle glow effect on logo
+  - 5-second display time with 1-second fade-out transition
+  - Smooth screen transitions (renders next screen while dark to prevent flash)
 
 ### Changed
 - **State machine** - Added `WIFI_SETUP` state for WiFi provisioning

@@ -222,12 +222,21 @@ void setup() {
 
     // Show boot screen
     showBootScreen();
-    delay(500);  // Brief display of boot screen
+    lv_timer_handler();  // Force LVGL to render the boot screen
+    delay(5000);  // Display boot logo for 5 seconds
+
+    // Fade out over 1 second (255 to 0 in 50 steps = 20ms per step)
+    for (int i = 255; i >= 0; i -= 5) {
+        display_set_brightness(i);
+        delay(20);
+    }
 
     // Check if we have stored WiFi credentials
     if (!storedWifiSSID.isEmpty()) {
         Serial.printf("Found stored WiFi credentials for: %s\n", storedWifiSSID.c_str());
         showConnectingScreen();
+        lv_timer_handler();  // Render while still dark
+        display_set_brightness(255);  // Now restore brightness
 
         // Try to connect with stored credentials
         connectToWifi(storedWifiSSID.c_str(), storedWifiPassword.c_str());
@@ -243,6 +252,8 @@ void setup() {
     } else {
         Serial.println("No stored WiFi credentials, showing setup screen");
         transitionTo(TerminalState::WIFI_SETUP);
+        lv_timer_handler();  // Render while still dark
+        display_set_brightness(255);  // Restore brightness
     }
 
     Serial.println("Setup complete!");
