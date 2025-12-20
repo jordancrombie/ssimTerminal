@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2025-12-19
+
+### Added
+- **WiFi connectivity** - Connects to configured network on boot
+- **SSIM server pairing** - HTTP POST to `/api/terminal/pair` with device info
+  - Stores API key and terminal ID in NVS (non-volatile storage)
+  - Automatically uses stored credentials on subsequent boots
+- **WebSocket client** - Secure connection to SSIM server (`wss://`)
+  - Handles `payment_request`, `payment_result`, `payment_cancel` messages
+  - Sends `heartbeat` and `payment_status` messages
+  - Auto-reconnect on disconnect
+- **State machine** - BOOT → CONNECTING → IDLE ⇄ QR_DISPLAY → RESULT → IDLE
+- **Basic UI screens** - Boot, Connecting, Idle, Error screens with LVGL
+
+### Changed
+- **Setup flow** - Now connects WiFi first, then pairs if needed, then WebSocket
+- **Boot sequence** - Shows connecting screen during WiFi/pairing phase
+
+### Fixed
+- **Boot loop crash** - WiFi must be connected before making HTTP requests
+  - Previous code called `pairWithServer()` before `setupWiFi()`
+
+---
+
 ## [0.1.0] - 2025-12-19
 
 ### Added

@@ -12,6 +12,8 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
@@ -26,7 +28,7 @@
 // =============================================================================
 // Configuration
 // =============================================================================
-#define FIRMWARE_VERSION    "0.1.0"
+#define FIRMWARE_VERSION    "0.2.0"
 #define HEARTBEAT_INTERVAL  30000   // 30 seconds
 #define RECONNECT_DELAY     5000    // 5 seconds
 #define RESULT_DISPLAY_MS   3000    // 3 seconds to show result
@@ -79,7 +81,9 @@ void handleWebSocketEvent(WStype_t type, uint8_t *payload, size_t length);
 void handleServerMessage(const char *payload);
 void sendHeartbeat();
 void sendAck(const char *messageId);
+void sendPaymentStatus(const char *paymentId, const char *status);
 void transitionTo(TerminalState newState);
+bool pairWithServer(const char *pairingCode);
 
 // UI screens
 void showBootScreen();
@@ -156,11 +160,37 @@ void setup() {
     // Show boot screen
     showBootScreen();
 
+    // Connect to WiFi first (required for pairing and WebSocket)
+    showConnectingScreen();
+    setupWiFi();
+
+    if (WiFi.status() != WL_CONNECTED) {
+        showErrorScreen("WiFi connection failed");
+        transitionTo(TerminalState::ERROR);
+        Serial.println("Setup complete (WiFi failed)!");
+        return;
+    }
+
     // Check if we have stored credentials
     if (apiKey.isEmpty()) {
-        transitionTo(TerminalState::PAIRING);
+        // No API key stored - need to pair
+        Serial.println("No API key found, attempting to pair...");
+
+        // For development: use hardcoded pairing code
+        // TODO: Replace with UI-based pairing flow
+        if (pairWithServer("558067")) {
+            Serial.println("Pairing successful, connecting to WebSocket...");
+            connectWebSocket();
+            transitionTo(TerminalState::IDLE);
+        } else {
+            Serial.println("Pairing failed!");
+            showErrorScreen("Pairing failed\nCheck code and retry");
+            transitionTo(TerminalState::ERROR);
+        }
     } else {
-        transitionTo(TerminalState::CONNECTING);
+        Serial.printf("Using stored API key for terminal: %s\n", terminalId.c_str());
+        connectWebSocket();
+        transitionTo(TerminalState::IDLE);
     }
 
     Serial.println("Setup complete!");
@@ -289,8 +319,8 @@ void transitionTo(TerminalState newState) {
 void setupWiFi() {
     // TODO: Implement proper WiFi provisioning UI
     // For development, use hardcoded credentials
-    const char *ssid = "YOUR_WIFI_SSID";
-    const char *password = "YOUR_WIFI_PASSWORD";
+    const char *ssid = "755Avenue_IOT";
+    const char *password = "sun0sr0x";
 
     Serial.printf("Connecting to WiFi: %s\n", ssid);
     WiFi.begin(ssid, password);
@@ -317,22 +347,88 @@ void setupWiFi() {
 // WebSocket
 // =============================================================================
 void connectWebSocket() {
-    if (ssimServerUrl.isEmpty()) {
-        // For development, use localhost
-        Serial.println("No server URL configured, using localhost for development");
-        webSocket.begin("192.168.1.100", 3000, "/terminal/ws");
-    } else {
-        // Parse URL and connect
-        // Expected format: wss://ssim.example.com/terminal/ws?apiKey=xxx
-        String wsUrl = "/terminal/ws?apiKey=" + apiKey;
-        // TODO: Parse host from ssimServerUrl
-        webSocket.begin("ssim.example.com", 443, wsUrl.c_str());
+    // Development server
+    const char* wsHost = "ssim-dev.banksim.ca";
+    const int wsPort = 443;
+
+    String wsPath = "/terminal/ws";
+    if (!apiKey.isEmpty()) {
+        wsPath += "?apiKey=" + apiKey;
     }
 
+    Serial.printf("Connecting to WSS: %s:%d%s\n", wsHost, wsPort, wsPath.c_str());
+
+    // Use SSL for wss://
+    webSocket.beginSSL(wsHost, wsPort, wsPath.c_str());
     webSocket.onEvent(handleWebSocketEvent);
     webSocket.setReconnectInterval(RECONNECT_DELAY);
 
     Serial.println("WebSocket connecting...");
+}
+
+// =============================================================================
+// Pairing
+// =============================================================================
+bool pairWithServer(const char *pairingCode) {
+    Serial.printf("Pairing with code: %s\n", pairingCode);
+
+    WiFiClientSecure client;
+    client.setInsecure();  // Skip certificate validation for dev
+
+    HTTPClient http;
+    http.begin(client, "https://ssim-dev.banksim.ca/api/terminal/pair");
+    http.addHeader("Content-Type", "application/json");
+
+    // Build request body
+    JsonDocument doc;
+    doc["pairingCode"] = pairingCode;
+    JsonObject deviceInfo = doc["deviceInfo"].to<JsonObject>();
+    deviceInfo["model"] = "ESP32-S3-Touch-AMOLED-1.8";
+    deviceInfo["firmwareVersion"] = FIRMWARE_VERSION;
+    deviceInfo["macAddress"] = WiFi.macAddress();
+
+    String requestBody;
+    serializeJson(doc, requestBody);
+    Serial.printf("Pairing request: %s\n", requestBody.c_str());
+
+    int httpCode = http.POST(requestBody);
+    Serial.printf("Pairing response code: %d\n", httpCode);
+
+    if (httpCode == 200 || httpCode == 201) {
+        String response = http.getString();
+        Serial.printf("Pairing response: %s\n", response.c_str());
+
+        JsonDocument respDoc;
+        DeserializationError error = deserializeJson(respDoc, response);
+        if (error) {
+            Serial.printf("JSON parse error: %s\n", error.c_str());
+            http.end();
+            return false;
+        }
+
+        if (respDoc["success"] == true) {
+            terminalId = respDoc["terminalId"].as<String>();
+            apiKey = respDoc["apiKey"].as<String>();
+
+            // Save to NVS
+            preferences.putString("terminal_id", terminalId);
+            preferences.putString("api_key", apiKey);
+            preferences.putString("server_url", "ssim-dev.banksim.ca");
+
+            Serial.printf("Paired successfully! Terminal: %s\n", terminalId.c_str());
+            http.end();
+            return true;
+        } else {
+            Serial.printf("Pairing failed: %s\n", respDoc["error"].as<const char*>());
+        }
+    } else {
+        Serial.printf("HTTP error: %s\n", http.errorToString(httpCode).c_str());
+        String response = http.getString();
+        Serial.printf("Response: %s\n", response.c_str());
+    }
+
+    http.end();
+    return false;
 }
 
 void handleWebSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
@@ -380,20 +476,36 @@ void handleServerMessage(const char *payload) {
     const char *type = doc["type"];
     const char *messageId = doc["messageId"] | "";
 
-    if (strcmp(type, "display_qr") == 0) {
+    Serial.printf("Received message type: %s\n", type);
+
+    if (strcmp(type, "payment_request") == 0) {
+        // SSIM sends: {"type": "payment_request", "payload": {"paymentId": "...", "qrCodeUrl": "...", "amount": 1500, "currency": "CAD"}}
         JsonObject p = doc["payload"];
         currentPaymentId = p["paymentId"].as<String>();
-        currentQrData = p["qrData"].as<String>();
+        currentQrData = p["qrCodeUrl"].as<String>();  // Note: qrCodeUrl not qrData
         currentAmount = p["amount"];
-        currentCurrency = p["currency"].as<String>();
+        currentCurrency = p["currency"] | "CAD";
         const char *description = p["orderDescription"] | "";
+
+        Serial.printf("Payment request: %s, Amount: %d %s\n",
+                      currentPaymentId.c_str(), currentAmount, currentCurrency.c_str());
 
         // Calculate local expiry time (5 minute default)
         qrExpiresAt = millis() + (5 * 60 * 1000);
 
         showQrScreen(currentQrData.c_str(), currentAmount, currentCurrency.c_str(), description);
         transitionTo(TerminalState::QR_DISPLAY);
-        sendAck(messageId);
+
+        // Send status back to SSIM
+        sendPaymentStatus(currentPaymentId.c_str(), "displayed");
+    }
+    else if (strcmp(type, "payment_cancel") == 0) {
+        JsonObject p = doc["payload"];
+        const char *paymentId = p["paymentId"];
+        Serial.printf("Payment cancelled: %s\n", paymentId);
+
+        showResultScreen("cancelled", "Payment Cancelled");
+        transitionTo(TerminalState::RESULT);
     }
     else if (strcmp(type, "payment_result") == 0) {
         JsonObject p = doc["payload"];
@@ -403,15 +515,17 @@ void handleServerMessage(const char *payload) {
         showResultScreen(status, message);
         transitionTo(TerminalState::RESULT);
         playResultSound(status);
-        sendAck(messageId);
+    }
+    else if (strcmp(type, "config_update") == 0) {
+        JsonObject p = doc["payload"];
+        // TODO: Handle config updates (heartbeatInterval, etc.)
+        Serial.println("Config update received");
+    }
+    else if (strcmp(type, "pong") == 0) {
+        Serial.println("Pong received");
     }
     else if (strcmp(type, "clear") == 0) {
         transitionTo(TerminalState::IDLE);
-        sendAck(messageId);
-    }
-    else if (strcmp(type, "config") == 0) {
-        // TODO: Handle config updates
-        sendAck(messageId);
     }
 }
 
@@ -442,6 +556,21 @@ void sendAck(const char *messageId) {
     String json;
     serializeJson(doc, json);
     webSocket.sendTXT(json);
+}
+
+void sendPaymentStatus(const char *paymentId, const char *status) {
+    if (!webSocket.isConnected()) return;
+
+    JsonDocument doc;
+    doc["type"] = "payment_status";
+    JsonObject payload = doc["payload"].to<JsonObject>();
+    payload["paymentId"] = paymentId;
+    payload["status"] = status;
+
+    String json;
+    serializeJson(doc, json);
+    webSocket.sendTXT(json);
+    Serial.printf("Sent payment_status: %s = %s\n", paymentId, status);
 }
 
 // =============================================================================
