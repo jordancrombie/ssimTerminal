@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2025-12-21
+
+### Added
+- **Multi-device support** - PlatformIO build environments for different hardware
+  - `amoled-1_8` - Waveshare ESP32-S3-Touch-AMOLED-1.8 (368x448, SH8601 QSPI)
+  - `lcd-7` - Waveshare ESP32-S3-Touch-LCD-7 (800x480, ST7262 RGB)
+  - Board-specific configuration via `include/boards/` headers
+  - Conditional compilation using `BOARD_*` defines
+- **ST7262 RGB LCD driver** - Support for 7" display via ESP-IDF `esp_lcd`
+  - RGB565 parallel interface with 16 data pins
+  - PSRAM framebuffer with bounce buffer for stability
+  - Timing parameters from Waveshare reference implementation
+- **CH422G I/O expander driver** - For 7" LCD board
+  - Multi-address I2C protocol (0x24 config, 0x38 IO output)
+  - Controls LCD backlight (IO2) and touch reset (IO1)
+- **GT911 touch driver** - Capacitive touch for 7" LCD
+  - I2C address 0x5D (alternate 0x14)
+  - Polling-based touch reading
+- **Connection robustness improvements**
+  - Wait for `config_update` before transitioning to IDLE (prevents race condition)
+  - Connection session ID for debugging (included in heartbeats)
+  - Heartbeat/pong tracking with missed pong detection
+  - Force reconnect after 3 missed pongs or 2-minute pong timeout
+  - `forceReconnect()` function for clean reconnection
+
+### Changed
+- **WebSocket connect flow** - Now stays in CONNECTING state until server confirms
+  - Previously: Immediately transitioned to IDLE on connect
+  - Now: Waits for `config_update` message before showing "Ready for Payment"
+  - Ensures server has fully registered terminal before accepting payments
+- **Heartbeat payload** - Now includes `sessionId` for debugging connection issues
+- **Conditional audio** - ES8311 audio code wrapped in `#if HAS_AUDIO_ES8311`
+  - 7" LCD board doesn't have ES8311 codec
+
+### Fixed
+- **QR code display race condition** - Root cause was server-side WebSocket management
+  - Terminal-side improvements provide defense in depth
+  - See `docs/TROUBLESHOOTING_QR_DISPLAY.md` for full analysis
+
+---
+
 ## [0.5.0] - 2025-12-21
 
 ### Added

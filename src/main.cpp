@@ -64,6 +64,13 @@ static unsigned long lastLvglTick = 0;
 static unsigned long resultStartTime = 0;
 static unsigned long qrExpiresAt = 0;
 
+// Connection robustness tracking
+static String connectionSessionId;              // Unique ID per connection for debugging
+static unsigned long lastPongReceivedAt = 0;    // Timestamp of last pong from server
+static int heartbeatsSentWithoutPong = 0;       // Counter for missed pongs
+static const int MAX_MISSED_PONGS = 3;          // Force reconnect after this many
+static const unsigned long PONG_TIMEOUT_MS = 120000;  // 2 minutes without pong = dead
+
 // Current payment info
 static String currentPaymentId;
 static String currentQrData;
@@ -132,6 +139,7 @@ void loadStoredConfig();
 void saveConfig();
 void setupWiFi();
 void connectWebSocket();
+void forceReconnect();
 void handleWebSocketEvent(WStype_t type, uint8_t *payload, size_t length);
 void handleServerMessage(const char *payload);
 void sendHeartbeat();
@@ -168,10 +176,14 @@ void showSettingsScreen();
 void loadSettings();
 void saveSettings();
 
-// Audio
+// Audio (only on boards with ES8311)
+#if HAS_AUDIO_ES8311
 void initAudio();
 void playTone(int frequency, int durationMs);
 void playResultSound(const char *status);
+#else
+static inline void playResultSound(const char *status) { (void)status; }
+#endif
 
 // =============================================================================
 // LVGL Tick
@@ -236,8 +248,12 @@ void setup() {
     loadEnvironment();
     loadSettings();
 
-    // Initialize audio
+    // Initialize audio (only on boards with ES8311)
+#if HAS_AUDIO_ES8311
     initAudio();
+#else
+    Serial.println("Audio: Not available on this board");
+#endif
 
     // Show boot screen
     showBootScreen();
@@ -551,6 +567,14 @@ void setupAfterWifiConnected() {
 void connectWebSocket() {
     const ServerConfig* config = getServerConfig();
 
+    // Generate unique session ID for this connection (for debugging)
+    connectionSessionId = String(millis()) + "_" + String(random(1000, 9999));
+    Serial.printf("New connection session: %s\n", connectionSessionId.c_str());
+
+    // Reset connection tracking state
+    lastPongReceivedAt = millis();
+    heartbeatsSentWithoutPong = 0;
+
     String wsPath = "/terminal/ws";
     if (!apiKey.isEmpty()) {
         wsPath += "?apiKey=" + apiKey;
@@ -571,6 +595,16 @@ void connectWebSocket() {
     webSocket.setExtraHeaders("User-Agent: ssimTerminal/0.5.0");
 
     Serial.println("WebSocket connecting...");
+}
+
+/**
+ * @brief Force a clean reconnection to the WebSocket server
+ */
+void forceReconnect() {
+    Serial.println("Forcing WebSocket reconnect...");
+    webSocket.disconnect();
+    delay(500);  // Give server time to process disconnect
+    connectWebSocket();
 }
 
 // =============================================================================
@@ -661,13 +695,26 @@ void handleWebSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
             break;
 
         case WStype_CONNECTED:
-            Serial.printf("WebSocket connected to: %s\n", (char *)payload);
-            transitionTo(TerminalState::IDLE);
+            Serial.printf("WebSocket connected to: %s (session: %s)\n",
+                          (char *)payload, connectionSessionId.c_str());
+            // Stay in CONNECTING state - transition to IDLE only after config_update
+            // This ensures server has fully registered us before we accept payments
+            transitionTo(TerminalState::CONNECTING);
             sendHeartbeat();
             break;
 
         case WStype_TEXT:
-            Serial.printf("WebSocket message: %.*s\n", (int)length, (char *)payload);
+            Serial.printf("WebSocket message (%d bytes): %.*s\n", (int)length, (int)min(length, (size_t)200), (char *)payload);
+            // Debug: briefly invert screen to show message received
+            // (Remove this debug code once issue is fixed)
+            #ifdef DEBUG_WS_MESSAGES
+            if (current_screen) {
+                lv_obj_set_style_bg_color(current_screen, lv_color_white(), 0);
+                lv_timer_handler();
+                delay(50);
+                lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
+            }
+            #endif
             handleServerMessage((char *)payload);
             break;
 
@@ -753,7 +800,14 @@ void handleServerMessage(const char *payload) {
     }
     else if (strcmp(type, "config_update") == 0) {
         JsonObject p = doc["payload"];
-        Serial.println("Config update received");
+        Serial.println("Config update received - connection confirmed by server");
+
+        // This confirms the server has fully registered our connection
+        // Now we can safely transition to IDLE and accept payments
+        if (currentState == TerminalState::CONNECTING) {
+            Serial.println("Server registration complete, transitioning to IDLE");
+            transitionTo(TerminalState::IDLE);
+        }
 
         // Update store name if provided
         if (!p["storeName"].isNull()) {
@@ -770,6 +824,9 @@ void handleServerMessage(const char *payload) {
         }
     }
     else if (strcmp(type, "pong") == 0) {
+        // Reset heartbeat tracking - server is responding
+        lastPongReceivedAt = millis();
+        heartbeatsSentWithoutPong = 0;
         Serial.println("Pong received");
     }
     else if (strcmp(type, "clear") == 0) {
@@ -780,10 +837,26 @@ void handleServerMessage(const char *payload) {
 void sendHeartbeat() {
     if (!webSocket.isConnected()) return;
 
+    // Track missed pongs - if we haven't received a pong in too long, force reconnect
+    heartbeatsSentWithoutPong++;
+    if (heartbeatsSentWithoutPong > MAX_MISSED_PONGS) {
+        Serial.printf("WARNING: No pong for %d heartbeats, forcing reconnect\n", heartbeatsSentWithoutPong);
+        forceReconnect();
+        return;
+    }
+
+    // Also check absolute time since last pong
+    if (lastPongReceivedAt > 0 && (millis() - lastPongReceivedAt) > PONG_TIMEOUT_MS) {
+        Serial.printf("WARNING: No pong for %lums, forcing reconnect\n", millis() - lastPongReceivedAt);
+        forceReconnect();
+        return;
+    }
+
     JsonDocument doc;
     doc["type"] = "heartbeat";
     JsonObject payload = doc["payload"].to<JsonObject>();
     payload["terminalId"] = terminalId;
+    payload["sessionId"] = connectionSessionId;  // For debugging connection issues
     payload["firmwareVersion"] = FIRMWARE_VERSION;
     payload["uptime"] = millis() / 1000;
     payload["freeMemory"] = ESP.getFreeHeap();
@@ -793,8 +866,8 @@ void sendHeartbeat() {
     String json;
     serializeJson(doc, json);
     webSocket.sendTXT(json);
-    Serial.printf("Heartbeat sent: uptime=%lus, heap=%d, rssi=%d\n",
-                  millis() / 1000, ESP.getFreeHeap(), WiFi.RSSI());
+    Serial.printf("Heartbeat sent: uptime=%lus, heap=%d, rssi=%d, missed_pongs=%d\n",
+                  millis() / 1000, ESP.getFreeHeap(), WiFi.RSSI(), heartbeatsSentWithoutPong);
 }
 
 void sendAck(const char *messageId) {
@@ -1562,7 +1635,7 @@ void showQrScreen(const char *qrData, int amount, const char *currency, const ch
             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
         );
         if (qr_canvas_buf == nullptr) {
-            Serial.println("Failed to allocate QR canvas buffer!");
+            Serial.println("ERROR: Failed to allocate QR canvas buffer!");
             return;
         }
     }
@@ -1625,6 +1698,7 @@ void showQrScreen(const char *qrData, int amount, const char *currency, const ch
         lv_obj_set_style_text_color(desc_label, lv_color_hex(0xAAAAAA), 0);
         lv_obj_align(desc_label, LV_ALIGN_BOTTOM_MID, 0, -30);
     }
+
 }
 
 void showResultScreen(const char *status, const char *message) {
@@ -1725,8 +1799,10 @@ void showErrorScreen(const char *message) {
 }
 
 // =============================================================================
-// Audio - ES8311 Codec via I2S
+// Audio - ES8311 Codec via I2S (only on boards with ES8311)
 // =============================================================================
+#if HAS_AUDIO_ES8311
+
 static bool audioInitialized = false;
 static const int SAMPLE_RATE = 44100;
 static const int I2S_PORT = I2S_NUM_0;
@@ -1875,3 +1951,5 @@ void playResultSound(const char *status) {
         playTone(440, 150);  // A4
     }
 }
+
+#endif // HAS_AUDIO_ES8311

@@ -1,16 +1,21 @@
 /**
  * @file pmu.cpp
- * @brief AXP2101 PMU driver implementation
+ * @brief PMU driver implementation
  *
- * Configures power management for Waveshare ESP32-S3-Touch-AMOLED-1.8.
- * Power rail assignments based on typical Waveshare/LilyGo configurations.
+ * For boards with AXP2101 (like ESP32-S3-Touch-AMOLED-1.8), this controls power rails.
+ * For boards without I2C PMU (like ESP32-S3-Touch-LCD-7), stub functions are provided.
  */
 
 #include "pmu.h"
 #include "pins_config.h"
 #include <Wire.h>
 
-// Define chip type before including XPowersLib
+#if HAS_PMU_AXP2101
+
+// =============================================================================
+// AXP2101 PMU Implementation
+// =============================================================================
+
 #define XPOWERS_CHIP_AXP2101
 #include <XPowersLib.h>
 
@@ -112,3 +117,32 @@ uint16_t pmu_get_battery_voltage() {
     if (!pmu_initialized) return 0;
     return pmu.getBattVoltage();
 }
+
+#else
+
+// =============================================================================
+// Stub Implementation (for boards without I2C PMU)
+// =============================================================================
+
+bool pmu_init() {
+    Serial.println("PMU: No AXP2101 on this board (power controlled by CS8501 or direct)");
+    return true;  // Return success - no PMU is not an error
+}
+
+int pmu_get_battery_percent() {
+    return -1;  // Not available
+}
+
+bool pmu_is_usb_connected() {
+    return true;  // Assume USB connected (no way to detect)
+}
+
+bool pmu_is_charging() {
+    return false;  // Unknown
+}
+
+uint16_t pmu_get_battery_voltage() {
+    return 0;  // Not available
+}
+
+#endif // HAS_PMU_AXP2101

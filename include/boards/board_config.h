@@ -1,0 +1,35 @@
+/**
+ * @file board_config.h
+ * @brief Board configuration selector for ssimTerminal
+ *
+ * This file selects the appropriate board configuration based on
+ * build flags defined in platformio.ini
+ */
+
+#ifndef BOARD_CONFIG_H
+#define BOARD_CONFIG_H
+
+// Board selection via PlatformIO build flags
+#if defined(BOARD_WAVESHARE_AMOLED_1_8)
+    #include "boards/waveshare_amoled_1_8.h"
+#elif defined(BOARD_WAVESHARE_LCD_7)
+    #include "boards/waveshare_lcd_7.h"
+#else
+    #error "No board defined! Add -DBOARD_WAVESHARE_AMOLED_1_8 or -DBOARD_WAVESHARE_LCD_7 to build_flags in platformio.ini"
+#endif
+
+// Common board interface validation
+#ifndef LCD_WIDTH
+    #error "Board config must define LCD_WIDTH"
+#endif
+#ifndef LCD_HEIGHT
+    #error "Board config must define LCD_HEIGHT"
+#endif
+#ifndef I2C_SDA
+    #error "Board config must define I2C_SDA"
+#endif
+#ifndef I2C_SCL
+    #error "Board config must define I2C_SCL"
+#endif
+
+#endif // BOARD_CONFIG_H
