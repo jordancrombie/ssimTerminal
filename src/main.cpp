@@ -19,6 +19,8 @@
 #include <Preferences.h>
 #include <lvgl.h>
 #include <qrcode.h>
+#include <Wire.h>
+#include <driver/i2s.h>
 
 #include "pins_config.h"
 #include "pmu.h"
@@ -28,7 +30,7 @@
 // =============================================================================
 // Configuration
 // =============================================================================
-#define FIRMWARE_VERSION    "0.4.0"
+#define FIRMWARE_VERSION    "0.5.0"
 #define HEARTBEAT_INTERVAL  30000   // 30 seconds
 #define RECONNECT_DELAY     5000    // 5 seconds
 #define RESULT_DISPLAY_MS   3000    // 3 seconds to show result
@@ -43,6 +45,7 @@ enum class TerminalState {
     PAIRING,        // First-time setup, entering server URL and pairing code
     CONNECTING,     // Connecting to SSIM WebSocket
     IDLE,           // Ready for payment, showing store branding
+    SETTINGS,       // Settings menu
     QR_DISPLAY,     // Showing QR code with amount and countdown
     RESULT,         // Payment outcome display
     ERROR           // Error state (connection lost, etc.)
@@ -71,6 +74,11 @@ static String currentCurrency;
 static String ssimServerUrl;
 static String apiKey;
 static String terminalId;
+static String storeName;
+
+// Settings (stored in NVS)
+static int displayBrightness = 255;    // 0-255
+static bool soundEnabled = true;
 
 // WiFi provisioning state
 static String wifiNetworks[20];       // List of scanned network SSIDs
@@ -107,9 +115,9 @@ static const ServerConfig DEV_CONFIG = {
 };
 
 static const ServerConfig PROD_CONFIG = {
-    "ssim.banksim.ca",
+    "store.regalmoose.ca",
     443,
-    "https://ssim.banksim.ca",
+    "https://store.regalmoose.ca",
     "Production"
 };
 
@@ -155,7 +163,14 @@ void loadEnvironment();
 void saveEnvironment();
 void showEnvironmentScreen();
 
+// Settings
+void showSettingsScreen();
+void loadSettings();
+void saveSettings();
+
 // Audio
+void initAudio();
+void playTone(int frequency, int durationMs);
 void playResultSound(const char *status);
 
 // =============================================================================
@@ -219,6 +234,10 @@ void setup() {
     loadStoredConfig();
     loadWifiCredentials();
     loadEnvironment();
+    loadSettings();
+
+    // Initialize audio
+    initAudio();
 
     // Show boot screen
     showBootScreen();
@@ -266,13 +285,17 @@ void loop() {
     // Handle LVGL (must be called frequently)
     lv_timer_handler();
 
-    // Handle WebSocket
-    if (currentState != TerminalState::BOOT && currentState != TerminalState::PAIRING) {
+    // Handle WebSocket (must be called frequently to maintain connection)
+    if (currentState != TerminalState::BOOT &&
+        currentState != TerminalState::WIFI_SETUP &&
+        currentState != TerminalState::WIFI_PASSWORD &&
+        currentState != TerminalState::PAIRING) {
         webSocket.loop();
     }
 
     // Send periodic heartbeat in all connected states
     if (currentState == TerminalState::IDLE ||
+        currentState == TerminalState::SETTINGS ||
         currentState == TerminalState::QR_DISPLAY ||
         currentState == TerminalState::RESULT) {
         if (millis() - lastHeartbeat >= HEARTBEAT_INTERVAL) {
@@ -313,16 +336,39 @@ void loadStoredConfig() {
     ssimServerUrl = preferences.getString("server_url", "");
     apiKey = preferences.getString("api_key", "");
     terminalId = preferences.getString("terminal_id", "");
+    storeName = preferences.getString("store_name", "");
 
-    Serial.printf("Config loaded - Server: %s, Terminal: %s, HasKey: %s\n",
+    Serial.printf("Config loaded - Server: %s, Terminal: %s, Store: %s, HasKey: %s\n",
                   ssimServerUrl.isEmpty() ? "(none)" : ssimServerUrl.c_str(),
                   terminalId.isEmpty() ? "(none)" : terminalId.c_str(),
+                  storeName.isEmpty() ? "(none)" : storeName.c_str(),
                   apiKey.isEmpty() ? "no" : "yes");
+}
+
+void loadSettings() {
+    displayBrightness = preferences.getInt("brightness", 255);
+    soundEnabled = preferences.getBool("sound_on", true);
+    Serial.printf("Settings loaded - Brightness: %d, Sound: %s\n",
+                  displayBrightness, soundEnabled ? "on" : "off");
+}
+
+void saveSettings() {
+    preferences.putInt("brightness", displayBrightness);
+    preferences.putBool("sound_on", soundEnabled);
+    Serial.printf("Settings saved - Brightness: %d, Sound: %s\n",
+                  displayBrightness, soundEnabled ? "on" : "off");
 }
 
 void loadWifiCredentials() {
     storedWifiSSID = preferences.getString("wifi_ssid", "");
     storedWifiPassword = preferences.getString("wifi_pass", "");
+
+    // Default WiFi credentials for testing (if none stored)
+    if (storedWifiSSID.isEmpty()) {
+        storedWifiSSID = "755Avenue_IOT";
+        storedWifiPassword = "sun0sr0x";
+        Serial.println("Using default WiFi credentials");
+    }
 
     Serial.printf("WiFi credentials loaded - SSID: %s, HasPassword: %s\n",
                   storedWifiSSID.isEmpty() ? "(none)" : storedWifiSSID.c_str(),
@@ -338,7 +384,7 @@ void saveWifiCredentials(const char *ssid, const char *password) {
 }
 
 void loadEnvironment() {
-    int env = preferences.getInt("environment", 0);  // 0 = development, 1 = production
+    int env = preferences.getInt("environment", 1);  // Default to production (1)
     currentEnvironment = (env == 1) ? Environment::PRODUCTION : Environment::DEVELOPMENT;
     Serial.printf("Environment loaded: %s\n", getServerConfig()->displayName);
 }
@@ -396,6 +442,10 @@ void transitionTo(TerminalState newState) {
             currentPaymentId = "";
             currentQrData = "";
             currentAmount = 0;
+            break;
+
+        case TerminalState::SETTINGS:
+            showSettingsScreen();
             break;
 
         case TerminalState::QR_DISPLAY:
@@ -514,6 +564,12 @@ void connectWebSocket() {
     webSocket.onEvent(handleWebSocketEvent);
     webSocket.setReconnectInterval(RECONNECT_DELAY);
 
+    // Enable automatic ping/pong to keep connection alive
+    webSocket.enableHeartbeat(15000, 3000, 2);  // ping every 15s, timeout 3s, 2 retries
+
+    // Skip SSL certificate validation (required for some servers)
+    webSocket.setExtraHeaders("User-Agent: ssimTerminal/0.5.0");
+
     Serial.println("WebSocket connecting...");
 }
 
@@ -563,12 +619,19 @@ bool pairWithServer(const char *pairingCode) {
             terminalId = respDoc["terminalId"].as<String>();
             apiKey = respDoc["apiKey"].as<String>();
 
+            // Capture store name if provided
+            if (!respDoc["storeName"].isNull()) {
+                storeName = respDoc["storeName"].as<String>();
+                preferences.putString("store_name", storeName);
+            }
+
             // Save to NVS
             preferences.putString("terminal_id", terminalId);
             preferences.putString("api_key", apiKey);
             preferences.putString("server_url", config->wsHost);
 
-            Serial.printf("Paired successfully! Terminal: %s\n", terminalId.c_str());
+            Serial.printf("Paired successfully! Terminal: %s, Store: %s\n",
+                          terminalId.c_str(), storeName.c_str());
             http.end();
             return true;
         } else {
@@ -690,8 +753,21 @@ void handleServerMessage(const char *payload) {
     }
     else if (strcmp(type, "config_update") == 0) {
         JsonObject p = doc["payload"];
-        // TODO: Handle config updates (heartbeatInterval, etc.)
         Serial.println("Config update received");
+
+        // Update store name if provided
+        if (!p["storeName"].isNull()) {
+            String newStoreName = p["storeName"].as<String>();
+            if (newStoreName != storeName) {
+                storeName = newStoreName;
+                preferences.putString("store_name", storeName);
+                Serial.printf("Store name updated: %s\n", storeName.c_str());
+                // Refresh idle screen if we're on it
+                if (currentState == TerminalState::IDLE) {
+                    showIdleScreen();
+                }
+            }
+        }
     }
     else if (strcmp(type, "pong") == 0) {
         Serial.println("Pong received");
@@ -1223,6 +1299,14 @@ void showConnectingScreen() {
     lv_obj_align(label, LV_ALIGN_CENTER, 0, 60);
 }
 
+static void idle_settings_btn_handler(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        Serial.println("Settings button pressed");
+        transitionTo(TerminalState::SETTINGS);
+    }
+}
+
 void showIdleScreen() {
     Serial.println("UI: Idle screen");
 
@@ -1230,6 +1314,23 @@ void showIdleScreen() {
 
     lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
 
+    // Settings gear button (top-right)
+    lv_obj_t *settings_btn = lv_btn_create(current_screen);
+    lv_obj_set_size(settings_btn, 44, 44);
+    lv_obj_align(settings_btn, LV_ALIGN_TOP_RIGHT, -10, 10);
+    lv_obj_set_style_bg_color(settings_btn, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_bg_opa(settings_btn, LV_OPA_80, 0);
+    lv_obj_set_style_radius(settings_btn, 22, 0);
+    lv_obj_set_style_shadow_width(settings_btn, 0, 0);
+    lv_obj_add_event_cb(settings_btn, idle_settings_btn_handler, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *gear_icon = lv_label_create(settings_btn);
+    lv_label_set_text(gear_icon, LV_SYMBOL_SETTINGS);
+    lv_obj_set_style_text_color(gear_icon, lv_color_white(), 0);
+    lv_obj_set_style_text_font(gear_icon, &lv_font_montserrat_20, 0);
+    lv_obj_center(gear_icon);
+
+    // Main title
     lv_obj_t *title = lv_label_create(current_screen);
     lv_label_set_text(title, "Ready for Payment");
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
@@ -1240,6 +1341,181 @@ void showIdleScreen() {
     lv_label_set_text(sub, "Waiting for transaction...");
     lv_obj_set_style_text_color(sub, lv_color_hex(0x888888), 0);
     lv_obj_align(sub, LV_ALIGN_CENTER, 0, 40);
+
+    // Store name at bottom (like firmware version on boot screen)
+    // Fall back to server hostname if no store name from server
+    lv_obj_t *store_label = lv_label_create(current_screen);
+    if (!storeName.isEmpty()) {
+        lv_label_set_text(store_label, storeName.c_str());
+    } else {
+        const ServerConfig* config = getServerConfig();
+        lv_label_set_text(store_label, config->wsHost);
+    }
+    lv_obj_set_style_text_color(store_label, lv_color_hex(0x666666), 0);
+    lv_obj_set_style_text_font(store_label, &lv_font_montserrat_14, 0);
+    lv_obj_align(store_label, LV_ALIGN_BOTTOM_MID, 0, -15);
+}
+
+// =============================================================================
+// Settings Screen
+// =============================================================================
+static lv_obj_t *brightness_slider = nullptr;
+static lv_obj_t *sound_switch = nullptr;
+
+static void settings_back_btn_handler(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        Serial.println("Settings: Back button pressed");
+        transitionTo(TerminalState::IDLE);
+    }
+}
+
+static void settings_brightness_handler(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+        lv_obj_t *slider = lv_event_get_target(e);
+        displayBrightness = lv_slider_get_value(slider);
+        display_set_brightness(displayBrightness);
+        Serial.printf("Settings: Brightness = %d\n", displayBrightness);
+    }
+}
+
+static void settings_sound_handler(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+        lv_obj_t *sw = lv_event_get_target(e);
+        soundEnabled = lv_obj_has_state(sw, LV_STATE_CHECKED);
+        Serial.printf("Settings: Sound = %s\n", soundEnabled ? "on" : "off");
+    }
+}
+
+static void settings_wifi_btn_handler(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        Serial.println("Settings: WiFi button pressed");
+        saveSettings();  // Save settings before leaving
+        transitionTo(TerminalState::WIFI_SETUP);
+    }
+}
+
+static void settings_save_handler(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        saveSettings();
+        Serial.println("Settings saved");
+        transitionTo(TerminalState::IDLE);
+    }
+}
+
+void showSettingsScreen() {
+    Serial.println("UI: Settings screen");
+
+    switchScreen();
+
+    lv_obj_set_style_bg_color(current_screen, lv_color_hex(0x1A1A1A), 0);
+
+    // Header with back button
+    lv_obj_t *back_btn = lv_btn_create(current_screen);
+    lv_obj_set_size(back_btn, 70, 36);
+    lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 10, 10);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x424242), 0);
+    lv_obj_set_style_radius(back_btn, 6, 0);
+    lv_obj_add_event_cb(back_btn, settings_back_btn_handler, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *back_label = lv_label_create(back_btn);
+    lv_label_set_text(back_label, LV_SYMBOL_LEFT " Back");
+    lv_obj_set_style_text_color(back_label, lv_color_white(), 0);
+    lv_obj_center(back_label);
+
+    // Title
+    lv_obj_t *title = lv_label_create(current_screen);
+    lv_label_set_text(title, "Settings");
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 15);
+
+    int y_offset = 70;
+
+    // Brightness section
+    lv_obj_t *bright_label = lv_label_create(current_screen);
+    lv_label_set_text(bright_label, "Brightness");
+    lv_obj_set_style_text_color(bright_label, lv_color_hex(0xCCCCCC), 0);
+    lv_obj_align(bright_label, LV_ALIGN_TOP_LEFT, 20, y_offset);
+
+    brightness_slider = lv_slider_create(current_screen);
+    lv_obj_set_size(brightness_slider, LCD_WIDTH - 60, 20);
+    lv_obj_align(brightness_slider, LV_ALIGN_TOP_MID, 0, y_offset + 25);
+    lv_slider_set_range(brightness_slider, 20, 255);  // Min 20 to prevent completely dark
+    lv_slider_set_value(brightness_slider, displayBrightness, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(brightness_slider, lv_color_hex(0x444444), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(brightness_slider, lv_color_hex(0x4A90D9), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(brightness_slider, lv_color_white(), LV_PART_KNOB);
+    lv_obj_add_event_cb(brightness_slider, settings_brightness_handler, LV_EVENT_VALUE_CHANGED, NULL);
+
+    y_offset += 70;
+
+    // Sound section
+    lv_obj_t *sound_label = lv_label_create(current_screen);
+    lv_label_set_text(sound_label, "Sound Effects");
+    lv_obj_set_style_text_color(sound_label, lv_color_hex(0xCCCCCC), 0);
+    lv_obj_align(sound_label, LV_ALIGN_TOP_LEFT, 20, y_offset);
+
+    sound_switch = lv_switch_create(current_screen);
+    lv_obj_set_size(sound_switch, 60, 30);
+    lv_obj_align(sound_switch, LV_ALIGN_TOP_RIGHT, -20, y_offset - 5);
+    if (soundEnabled) {
+        lv_obj_add_state(sound_switch, LV_STATE_CHECKED);
+    }
+    lv_obj_set_style_bg_color(sound_switch, lv_color_hex(0x444444), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sound_switch, lv_color_hex(0x4CAF50), (int)LV_PART_INDICATOR | (int)LV_STATE_CHECKED);
+    lv_obj_add_event_cb(sound_switch, settings_sound_handler, LV_EVENT_VALUE_CHANGED, NULL);
+
+    y_offset += 60;
+
+    // WiFi Settings button
+    lv_obj_t *wifi_btn = lv_btn_create(current_screen);
+    lv_obj_set_size(wifi_btn, LCD_WIDTH - 40, 44);
+    lv_obj_align(wifi_btn, LV_ALIGN_TOP_MID, 0, y_offset);
+    lv_obj_set_style_bg_color(wifi_btn, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_radius(wifi_btn, 8, 0);
+    lv_obj_add_event_cb(wifi_btn, settings_wifi_btn_handler, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *wifi_icon = lv_label_create(wifi_btn);
+    lv_label_set_text(wifi_icon, LV_SYMBOL_WIFI "  WiFi Settings");
+    lv_obj_set_style_text_color(wifi_icon, lv_color_white(), 0);
+    lv_obj_center(wifi_icon);
+
+    y_offset += 60;
+
+    // Environment indicator
+    const ServerConfig* config = getServerConfig();
+    lv_obj_t *env_label = lv_label_create(current_screen);
+    char env_text[64];
+    snprintf(env_text, sizeof(env_text), "Environment: %s", config->displayName);
+    lv_label_set_text(env_label, env_text);
+    lv_obj_set_style_text_color(env_label, lv_color_hex(0x888888), 0);
+    lv_obj_align(env_label, LV_ALIGN_TOP_LEFT, 20, y_offset);
+
+    y_offset += 30;
+
+    // Terminal info
+    lv_obj_t *info_label = lv_label_create(current_screen);
+    char info_text[128];
+    snprintf(info_text, sizeof(info_text), "Firmware: v%s\nTerminal: %.8s...",
+             FIRMWARE_VERSION, terminalId.isEmpty() ? "Not paired" : terminalId.c_str());
+    lv_label_set_text(info_label, info_text);
+    lv_obj_set_style_text_color(info_label, lv_color_hex(0x666666), 0);
+    lv_obj_set_style_text_font(info_label, &lv_font_montserrat_12, 0);
+    lv_obj_align(info_label, LV_ALIGN_TOP_LEFT, 20, y_offset);
+
+    // Save button at bottom
+    lv_obj_t *save_btn = lv_btn_create(current_screen);
+    lv_obj_set_size(save_btn, LCD_WIDTH - 40, 48);
+    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, 0, -20);
+    lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x4A90D9), 0);
+    lv_obj_set_style_radius(save_btn, 8, 0);
+    lv_obj_add_event_cb(save_btn, settings_save_handler, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *save_label = lv_label_create(save_btn);
+    lv_label_set_text(save_label, "Save & Return");
+    lv_obj_set_style_text_color(save_label, lv_color_white(), 0);
+    lv_obj_set_style_text_font(save_label, &lv_font_montserrat_16, 0);
+    lv_obj_center(save_label);
 }
 
 // Static buffer for QR code canvas (allocated once to avoid fragmentation)
@@ -1449,9 +1725,153 @@ void showErrorScreen(const char *message) {
 }
 
 // =============================================================================
-// Audio Feedback
+// Audio - ES8311 Codec via I2S
 // =============================================================================
+static bool audioInitialized = false;
+static const int SAMPLE_RATE = 44100;
+static const int I2S_PORT = I2S_NUM_0;
+
+// ES8311 I2C registers
+#define ES8311_RESET_REG        0x00
+#define ES8311_CLK_MANAGER_REG1 0x01
+#define ES8311_CLK_MANAGER_REG2 0x02
+#define ES8311_CLK_MANAGER_REG3 0x03
+#define ES8311_DAC_REG32        0x32
+#define ES8311_SYSTEM_REG0D     0x0D
+#define ES8311_SYSTEM_REG0E     0x0E
+#define ES8311_SYSTEM_REG12     0x12
+#define ES8311_SYSTEM_REG13     0x13
+
+static bool es8311WriteReg(uint8_t reg, uint8_t value) {
+    Wire.beginTransmission(AUDIO_I2C_ADDR);
+    Wire.write(reg);
+    Wire.write(value);
+    return Wire.endTransmission() == 0;
+}
+
+void initAudio() {
+    Serial.println("Audio: Initializing ES8311 codec...");
+
+    // Reset ES8311
+    es8311WriteReg(ES8311_RESET_REG, 0x3F);
+    delay(20);
+    es8311WriteReg(ES8311_RESET_REG, 0x00);
+    delay(20);
+
+    // Configure clock manager for I2S slave mode
+    es8311WriteReg(ES8311_CLK_MANAGER_REG1, 0x30);  // MCLK from I2S BCLK
+    es8311WriteReg(ES8311_CLK_MANAGER_REG2, 0x10);  // Clock divider
+
+    // Enable DAC and analog output
+    es8311WriteReg(ES8311_SYSTEM_REG0D, 0x01);  // Power up analog
+    es8311WriteReg(ES8311_SYSTEM_REG0E, 0x02);  // Enable DAC
+    es8311WriteReg(ES8311_SYSTEM_REG12, 0x00);  // Unmute DAC
+    es8311WriteReg(ES8311_SYSTEM_REG13, 0x10);  // Enable output
+
+    // Configure DAC volume
+    es8311WriteReg(ES8311_DAC_REG32, 0xBF);  // Set volume (0xBF = reasonable level)
+
+    // Configure I2S
+    i2s_config_t i2s_config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+        .sample_rate = SAMPLE_RATE,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 4,
+        .dma_buf_len = 256,
+        .use_apll = false,
+        .tx_desc_auto_clear = true,
+        .fixed_mclk = 0
+    };
+
+    i2s_pin_config_t pin_config = {
+        .mck_io_num = I2S_PIN_NO_CHANGE,
+        .bck_io_num = I2S_BCLK,
+        .ws_io_num = I2S_LRCLK,
+        .data_out_num = I2S_DOUT,
+        .data_in_num = I2S_DIN
+    };
+
+    esp_err_t err = i2s_driver_install((i2s_port_t)I2S_PORT, &i2s_config, 0, NULL);
+    if (err != ESP_OK) {
+        Serial.printf("Audio: I2S driver install failed: %d\n", err);
+        return;
+    }
+
+    err = i2s_set_pin((i2s_port_t)I2S_PORT, &pin_config);
+    if (err != ESP_OK) {
+        Serial.printf("Audio: I2S pin config failed: %d\n", err);
+        return;
+    }
+
+    audioInitialized = true;
+    Serial.println("Audio: ES8311 codec initialized");
+}
+
+void playTone(int frequency, int durationMs) {
+    if (!audioInitialized || !soundEnabled) return;
+
+    const int numSamples = (SAMPLE_RATE * durationMs) / 1000;
+    const float amplitude = 8000.0f;  // Volume (max 32767 for 16-bit)
+    const float twoPiF = 2.0f * PI * frequency / SAMPLE_RATE;
+
+    int16_t *samples = (int16_t *)heap_caps_malloc(512 * sizeof(int16_t), MALLOC_CAP_DEFAULT);
+    if (!samples) {
+        Serial.println("Audio: Failed to allocate sample buffer");
+        return;
+    }
+
+    int samplesWritten = 0;
+    while (samplesWritten < numSamples) {
+        int batchSize = min(256, numSamples - samplesWritten);
+
+        for (int i = 0; i < batchSize; i++) {
+            float sample = amplitude * sinf(twoPiF * (samplesWritten + i));
+            // Stereo: duplicate sample for left and right channels
+            samples[i * 2] = (int16_t)sample;      // Left
+            samples[i * 2 + 1] = (int16_t)sample;  // Right
+        }
+
+        size_t bytesWritten = 0;
+        i2s_write((i2s_port_t)I2S_PORT, samples, batchSize * 4, &bytesWritten, portMAX_DELAY);
+        samplesWritten += batchSize;
+    }
+
+    heap_caps_free(samples);
+}
+
 void playResultSound(const char *status) {
-    // TODO: Implement audio feedback using ES8311 codec
-    Serial.printf("Audio: Would play %s sound\n", status);
+    if (!soundEnabled) {
+        Serial.printf("Audio: Sound disabled, skipping %s sound\n", status);
+        return;
+    }
+
+    Serial.printf("Audio: Playing %s sound\n", status);
+
+    if (strcmp(status, "approved") == 0) {
+        // Happy ascending tones
+        playTone(523, 100);  // C5
+        delay(50);
+        playTone(659, 100);  // E5
+        delay(50);
+        playTone(784, 150);  // G5
+    } else if (strcmp(status, "declined") == 0) {
+        // Sad descending tones
+        playTone(392, 200);  // G4
+        delay(100);
+        playTone(294, 300);  // D4
+    } else if (strcmp(status, "cancelled") == 0) {
+        // Single neutral beep
+        playTone(440, 200);  // A4
+    } else if (strcmp(status, "expired") == 0) {
+        // Two short beeps
+        playTone(349, 100);  // F4
+        delay(100);
+        playTone(349, 100);  // F4
+    } else {
+        // Default: single beep
+        playTone(440, 150);  // A4
+    }
 }

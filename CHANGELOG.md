@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2025-12-21
+
+### Added
+- **Settings menu** - Accessible via gear icon on idle screen
+  - Brightness slider with live preview (persisted in NVS)
+  - Sound effects toggle (on/off)
+  - WiFi settings shortcut
+  - Environment indicator
+  - Terminal info (firmware version, terminal ID)
+  - Save & Return button
+- **Store name display** - Shows on idle screen at bottom
+  - Displays store name from server (via pairing response or config_update)
+  - Falls back to server hostname if no store name provided
+- **Audio feedback** - Sound effects for payment results via ES8311 codec
+  - Approved: Happy ascending C-E-G tones
+  - Declined: Sad descending G-D tones
+  - Cancelled: Single neutral beep
+  - Expired: Two short beeps
+  - Respects sound enabled setting
+- **WebSocket stability improvements**
+  - Added ping/pong heartbeat (15s interval, 3s timeout, 2 retries)
+  - Connection stays alive during settings menu
+
+### Changed
+- **Production server** - Changed from `ssim.banksim.ca` to `store.regalmoose.ca`
+- **State machine** - Added `SETTINGS` state
+- **Heartbeat coverage** - Now sends in SETTINGS state as well
+
+### Fixed
+- **Credentials persistence** - Removed temporary NVS clear (credentials now persist across reboots)
+
+---
+
 ## [0.4.0] - 2025-12-19
 
 ### Added
