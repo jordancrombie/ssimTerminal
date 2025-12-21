@@ -31,3 +31,7 @@ Thumbs.db
 secrets.h
 credentials.h
 wifi_config.h
+
+# Claude Code
+CLAUDE.md
+.claude/

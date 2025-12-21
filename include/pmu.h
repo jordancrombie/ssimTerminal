@@ -1,23 +1,26 @@
 /**
  * @file pmu.h
- * @brief Power Management Unit (AXP2101) driver for Waveshare ESP32-S3-Touch-AMOLED-1.8
+ * @brief Power Management Unit driver for ssimTerminal
  *
  * The AXP2101 PMU controls power rails for the display, touch, and other peripherals.
  * Must be initialized before display_init() to ensure display has power.
+ *
+ * For boards without AXP2101 (like ESP32-S3-Touch-LCD-7), stub functions are provided.
  */
 
 #ifndef PMU_H
 #define PMU_H
 
 #include <Arduino.h>
+#include "pins_config.h"
 
 /**
- * @brief Initialize the AXP2101 PMU
+ * @brief Initialize the PMU
  *
  * Configures power rails for display and other peripherals.
  * Must be called before display_init().
  *
- * @return true if initialization successful, false otherwise
+ * @return true if initialization successful (or no PMU present), false on error
  */
 bool pmu_init();
 
