@@ -73,16 +73,16 @@ static bool init_expander() {
     tca9554_config(0xF0);
 
     // Proper reset sequence for touch and display
-    // 1. Assert reset (all low)
+    // 1. Assert reset (all low, including OLED_EN)
     tca9554_write(0x00);
     delay(50);  // Hold reset longer
 
-    // 2. Release LCD reset first, keep touch in reset
-    tca9554_write((1 << EXP_PIN_LCD_RST));  // Only LCD reset released
+    // 2. Enable OLED and release LCD reset, keep touch in reset
+    tca9554_write((1 << EXP_PIN_OLED_EN) | (1 << EXP_PIN_LCD_RST));
     delay(20);
 
     // 3. Release touch reset
-    tca9554_write((1 << EXP_PIN_TP_RST) | (1 << EXP_PIN_LCD_RST));
+    tca9554_write((1 << EXP_PIN_OLED_EN) | (1 << EXP_PIN_TP_RST) | (1 << EXP_PIN_LCD_RST));
     delay(100);  // Give touch controller time to initialize
 
     Serial.println("TCA9554 expander initialized, display/touch reset complete");

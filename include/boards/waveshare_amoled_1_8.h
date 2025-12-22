@@ -60,9 +60,10 @@
 // I/O Expander - TCA9554
 // =============================================================================
 #define EXPANDER_I2C_ADDR       0x20
-#define EXP_PIN_LCD_RST         1
-#define EXP_PIN_TP_RST          2
-#define EXP_PIN_SD_CS           3
+#define EXP_PIN_OLED_EN         0       // P0: OLED enable (must be HIGH for display)
+#define EXP_PIN_LCD_RST         1       // P1: LCD reset
+#define EXP_PIN_TP_RST          2       // P2: Touch panel reset
+#define EXP_PIN_SD_CS           3       // P3: SD card chip select
 
 // =============================================================================
 // Audio - ES8311 Codec

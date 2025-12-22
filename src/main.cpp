@@ -863,6 +863,17 @@ void sendHeartbeat() {
     payload["wifiRssi"] = WiFi.RSSI();
     payload["ipAddress"] = WiFi.localIP().toString();
 
+    // Add battery info if available (only on boards with PMU)
+#if HAS_PMU_AXP2101
+    int batteryPercent = pmu_get_battery_percent();
+    if (batteryPercent >= 0) {
+        payload["batteryPercent"] = batteryPercent;
+        payload["batteryVoltage"] = pmu_get_battery_voltage();
+        payload["isCharging"] = pmu_is_charging();
+    }
+    payload["usbConnected"] = pmu_is_usb_connected();
+#endif
+
     String json;
     serializeJson(doc, json);
     webSocket.sendTXT(json);
@@ -1427,6 +1438,70 @@ void showIdleScreen() {
     lv_obj_set_style_text_font(gear_icon, &lv_font_montserrat_20, 0);
     lv_obj_center(gear_icon);
 
+    // Battery indicator (only on boards with PMU)
+#if HAS_PMU_AXP2101
+    int batteryPercent = pmu_get_battery_percent();
+    bool isCharging = pmu_is_charging();
+    bool isUsbConnected = pmu_is_usb_connected();
+
+    // Create battery container
+    lv_obj_t *battery_container = lv_obj_create(current_screen);
+    lv_obj_remove_style_all(battery_container);
+    lv_obj_set_size(battery_container, 70, 24);
+    if (isRoundDisplay) {
+        lv_obj_align(battery_container, LV_ALIGN_BOTTOM_MID, 0, -45);  // Bottom center on round
+    } else {
+        lv_obj_align(battery_container, LV_ALIGN_TOP_LEFT, 10, 10);
+    }
+
+    // Battery icon based on level
+    lv_obj_t *battery_icon = lv_label_create(battery_container);
+    const char *batterySymbol;
+    lv_color_t batteryColor;
+
+    if (batteryPercent < 0) {
+        // Battery not detected
+        batterySymbol = LV_SYMBOL_USB;
+        batteryColor = lv_color_hex(0x888888);
+    } else if (isCharging) {
+        batterySymbol = LV_SYMBOL_CHARGE;
+        batteryColor = lv_color_hex(0x4CAF50);  // Green when charging
+    } else if (batteryPercent > 75) {
+        batterySymbol = LV_SYMBOL_BATTERY_FULL;
+        batteryColor = lv_color_hex(0x4CAF50);  // Green
+    } else if (batteryPercent > 50) {
+        batterySymbol = LV_SYMBOL_BATTERY_3;
+        batteryColor = lv_color_hex(0x8BC34A);  // Light green
+    } else if (batteryPercent > 25) {
+        batterySymbol = LV_SYMBOL_BATTERY_2;
+        batteryColor = lv_color_hex(0xFFC107);  // Yellow
+    } else if (batteryPercent > 10) {
+        batterySymbol = LV_SYMBOL_BATTERY_1;
+        batteryColor = lv_color_hex(0xFF9800);  // Orange
+    } else {
+        batterySymbol = LV_SYMBOL_BATTERY_EMPTY;
+        batteryColor = lv_color_hex(0xF44336);  // Red
+    }
+
+    lv_label_set_text(battery_icon, batterySymbol);
+    lv_obj_set_style_text_color(battery_icon, batteryColor, 0);
+    lv_obj_set_style_text_font(battery_icon, &lv_font_montserrat_16, 0);
+    lv_obj_align(battery_icon, LV_ALIGN_LEFT_MID, 0, 0);
+
+    // Battery percentage text
+    lv_obj_t *battery_text = lv_label_create(battery_container);
+    if (batteryPercent >= 0) {
+        lv_label_set_text_fmt(battery_text, "%d%%", batteryPercent);
+    } else if (isUsbConnected) {
+        lv_label_set_text(battery_text, "USB");
+    } else {
+        lv_label_set_text(battery_text, "--");
+    }
+    lv_obj_set_style_text_color(battery_text, lv_color_hex(0xCCCCCC), 0);
+    lv_obj_set_style_text_font(battery_text, &lv_font_montserrat_14, 0);
+    lv_obj_align(battery_text, LV_ALIGN_LEFT_MID, 22, 0);
+#endif
+
     // Main title
     lv_obj_t *title = lv_label_create(current_screen);
     lv_label_set_text(title, "Ready for Payment");
@@ -1606,6 +1681,29 @@ void showSettingsScreen() {
         lv_obj_set_style_text_color(info_label, lv_color_hex(0x666666), 0);
         lv_obj_set_style_text_font(info_label, &lv_font_montserrat_12, 0);
         lv_obj_align(info_label, LV_ALIGN_TOP_LEFT, 20, y_offset);
+
+        // Battery info (only on boards with PMU)
+#if HAS_PMU_AXP2101
+        y_offset += 35;
+        lv_obj_t *battery_info = lv_label_create(current_screen);
+        int batteryPercent = pmu_get_battery_percent();
+        uint16_t batteryVoltage = pmu_get_battery_voltage();
+        bool isCharging = pmu_is_charging();
+        bool isUsbConnected = pmu_is_usb_connected();
+
+        char battery_text[64];
+        if (batteryPercent >= 0) {
+            snprintf(battery_text, sizeof(battery_text), "Battery: %d%% (%dmV)%s",
+                     batteryPercent, batteryVoltage, isCharging ? " [Charging]" : "");
+        } else {
+            snprintf(battery_text, sizeof(battery_text), "Battery: %s",
+                     isUsbConnected ? "USB powered" : "Not detected");
+        }
+        lv_label_set_text(battery_info, battery_text);
+        lv_obj_set_style_text_color(battery_info, lv_color_hex(0x666666), 0);
+        lv_obj_set_style_text_font(battery_info, &lv_font_montserrat_12, 0);
+        lv_obj_align(battery_info, LV_ALIGN_TOP_LEFT, 20, y_offset);
+#endif
     }
 
     // Save button at bottom

@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.2] - 2025-12-21
+
+### Added
+- **Battery indicator** - Display battery status on AMOLED-1.8 board
+  - Idle screen shows battery icon and percentage (top-left on rectangular displays)
+  - Icon color changes based on level: green (>75%), light green (>50%), yellow (>25%), orange (>10%), red (<10%)
+  - Charging indicator (⚡ symbol) when connected to power and charging
+  - Falls back to USB icon when no battery detected but USB powered
+  - Settings screen shows detailed battery info (percentage, voltage, charging status)
+  - Heartbeat includes battery telemetry (percent, voltage, charging state, USB connection)
+
+### Fixed
+- **AMOLED display not working** - Fixed TCA9554 expander initialization regression
+  - P0 (OLED_EN) must be HIGH for AMOLED panel to display
+  - Added `EXP_PIN_OLED_EN` constant to board config for clarity
+  - Expander reset sequence now properly enables OLED, LCD reset, and touch reset
+  - **Root cause**: LCD-1.85C-BOX refactoring (v0.6.1) changed expander init from
+    `0x07` (P0+P1+P2) to `(1<<P1)|(1<<P2)` (P1+P2 only), dropping P0 which is
+    OLED_EN on AMOLED boards. This highlights the need for better board isolation
+    to prevent cross-board regressions.
+
+---
+
 ## [0.6.1] - 2025-12-21
 
 ### Added
