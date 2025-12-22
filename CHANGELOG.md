@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.5] - 2025-12-22
+
+### Fixed
+- **ES8311 audio now working on AMOLED-1.8** - Complete audio fix
+  - Added Waveshare ES8311 library (`es8311.c`, `es8311.h`, `es8311_reg.h`)
+  - Uses `ESP_I2S.h` library instead of legacy `driver/i2s.h` (required for ES8311)
+  - Correct I2S pin assignments from Waveshare demo: MCLK=16, BCLK=9, WS=45, DOUT=10, DIN=8
+  - PA (Power Amplifier) enable on GPIO 46
+  - Initialization order matches Waveshare demo exactly: PA → I2S → Wire.begin → ES8311
+
+### Technical Notes
+- ES8311 requires the new `ESP_I2S.h` Arduino library, not the legacy ESP-IDF `driver/i2s.h`
+- PCM5101 (on LCD-1.85C-BOX) still uses legacy `driver/i2s.h` - conditional includes prevent conflicts
+- **DO NOT MODIFY** the AMOLED-1.8 audio code - it is verified working
+
+---
+
 ## [0.6.4] - 2025-12-21
 
 ### Added
@@ -24,12 +41,6 @@ All notable changes to this project will be documented in this file.
   - AMOLED-1.8: Display, touch, battery indicator all functional
   - LCD-1.85C-BOX: Display, touch, audio (PCM5101) all functional
   - LCD-7: Display, touch functional (no audio hardware on this board)
-
-### Known Issues
-- **ES8311 audio not working on AMOLED-1.8** - Investigation ongoing
-  - I2C communication to ES8311 succeeds (no errors)
-  - Tried various clock configurations (MCLK, BCLK-derived)
-  - Audio works on LCD-1.85C-BOX (PCM5101 DAC), so I2S output is functional
 
 ---
 
