@@ -36,7 +36,7 @@
 // =============================================================================
 // Configuration
 // =============================================================================
-#define FIRMWARE_VERSION    "0.6.5"  // ES8311 audio working on AMOLED-1.8
+#define FIRMWARE_VERSION    "0.6.6"  // LCD-1.85C-BOX audio working (lib_ignore fix)
 #define HEARTBEAT_INTERVAL  30000   // 30 seconds
 #define RECONNECT_DELAY     5000    // 5 seconds
 #define RESULT_DISPLAY_MS   3000    // 3 seconds to show result

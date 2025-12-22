@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.6] - 2025-12-22
+
+### Fixed
+- **LCD-1.85C-BOX audio now working** - Fixed I2S driver conflict
+  - Added `lib_ignore = ESP_I2S` to lcd-1_85c_box and lcd-7 environments
+  - Prevents PlatformIO from linking ESP_I2S library (conflicts with legacy driver)
+  - PCM5101 audio on LCD-1.85C-BOX verified working
+
+### Technical Notes
+- ESP_I2S.h (new Arduino I2S) and driver/i2s.h (legacy ESP-IDF) cannot coexist
+- AMOLED-1.8 uses ESP_I2S.h for ES8311 codec
+- LCD-1.85C-BOX uses legacy driver/i2s.h for PCM5101 DAC
+- `build_src_filter` excludes es8311.c, `lib_ignore` prevents library linking
+
+---
+
 ## [0.6.5] - 2025-12-22
 
 ### Fixed
