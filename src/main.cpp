@@ -30,7 +30,7 @@
 // =============================================================================
 // Configuration
 // =============================================================================
-#define FIRMWARE_VERSION    "0.6.3"
+#define FIRMWARE_VERSION    "0.6.4"
 #define HEARTBEAT_INTERVAL  30000   // 30 seconds
 #define RECONNECT_DELAY     5000    // 5 seconds
 #define RESULT_DISPLAY_MS   3000    // 3 seconds to show result
@@ -1531,7 +1531,9 @@ void showIdleScreen() {
 // Settings Screen
 // =============================================================================
 static lv_obj_t *brightness_slider = nullptr;
+#if HAS_AUDIO
 static lv_obj_t *sound_switch = nullptr;
+#endif
 
 static void settings_back_btn_handler(lv_event_t *e) {
     if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
@@ -1549,6 +1551,7 @@ static void settings_brightness_handler(lv_event_t *e) {
     }
 }
 
+#if HAS_AUDIO
 static void settings_sound_handler(lv_event_t *e) {
     if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
         lv_obj_t *sw = lv_event_get_target(e);
@@ -1556,6 +1559,7 @@ static void settings_sound_handler(lv_event_t *e) {
         Serial.printf("Settings: Sound = %s\n", soundEnabled ? "on" : "off");
     }
 }
+#endif
 
 static void settings_wifi_btn_handler(lv_event_t *e) {
     if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
@@ -1627,7 +1631,8 @@ void showSettingsScreen() {
 
     y_offset += isRoundDisplay ? 60 : 70;
 
-    // Sound section
+#if HAS_AUDIO
+    // Sound section (only shown on boards with audio hardware)
     lv_obj_t *sound_label = lv_label_create(current_screen);
     lv_label_set_text(sound_label, "Sound Effects");
     lv_obj_set_style_text_color(sound_label, lv_color_hex(0xCCCCCC), 0);
@@ -1644,6 +1649,7 @@ void showSettingsScreen() {
     lv_obj_add_event_cb(sound_switch, settings_sound_handler, LV_EVENT_VALUE_CHANGED, NULL);
 
     y_offset += isRoundDisplay ? 50 : 60;
+#endif
 
     // WiFi Settings button
     lv_obj_t *wifi_btn = lv_btn_create(current_screen);

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.4] - 2025-12-21
+
+### Added
+- **Feature-based conditional UI** - Settings screen now only shows controls for supported features
+  - Sound toggle hidden on boards without audio hardware (LCD-7)
+  - Generic `HAS_AUDIO` flag in `board_config.h` combines ES8311 and PCM5101 support
+  - Pattern extensible for future features (BLE, NFC, etc.)
+
+---
+
 ## [0.6.3] - 2025-12-21
 
 ### Fixed
