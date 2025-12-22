@@ -176,8 +176,8 @@ void showSettingsScreen();
 void loadSettings();
 void saveSettings();
 
-// Audio (only on boards with ES8311)
-#if HAS_AUDIO_ES8311
+// Audio (on boards with ES8311 or PCM5101)
+#if HAS_AUDIO_ES8311 || HAS_AUDIO_PCM5101
 void initAudio();
 void playTone(int frequency, int durationMs);
 void playResultSound(const char *status);
@@ -248,8 +248,8 @@ void setup() {
     loadEnvironment();
     loadSettings();
 
-    // Initialize audio (only on boards with ES8311)
-#if HAS_AUDIO_ES8311
+    // Initialize audio (on boards with ES8311 or PCM5101)
+#if HAS_AUDIO_ES8311 || HAS_AUDIO_PCM5101
     initAudio();
 #else
     Serial.println("Audio: Not available on this board");
@@ -1314,45 +1314,62 @@ void showPairingScreen() {
     lv_obj_set_style_text_font(env_label, &lv_font_montserrat_12, 0);
     lv_obj_align(env_label, LV_ALIGN_TOP_RIGHT, -14, 14);
 
+    // Calculate sizes for round vs rectangular displays
+    // Round display (360x360) has visible area ~250px wide in center
+    bool isRoundDisplay = (LCD_WIDTH == LCD_HEIGHT && LCD_WIDTH <= 400);
+    int16_t contentWidth = isRoundDisplay ? 240 : 280;
+    int16_t topMargin = isRoundDisplay ? 40 : 10;  // More margin for round display corners
+    int16_t kb_width = isRoundDisplay ? 280 : ((LCD_WIDTH < 400) ? LCD_WIDTH : 368);
+    int16_t kb_height = isRoundDisplay ? 150 : ((LCD_HEIGHT < 400) ? 180 : 260);
+
     // Title
     lv_obj_t *title = lv_label_create(current_screen);
     lv_label_set_text(title, "Enter Pairing Code");
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+    lv_obj_set_style_text_font(title, isRoundDisplay ? &lv_font_montserrat_14 : &lv_font_montserrat_18, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, topMargin);
 
-    // Instructions
+    // Instructions - shorter text for round display
     lv_obj_t *instructions = lv_label_create(current_screen);
-    lv_label_set_text(instructions, "Get pairing code from SSIM\nSettings > Terminals > Add Terminal");
+    if (isRoundDisplay) {
+        lv_label_set_text(instructions, "Get code from SSIM Settings");
+    } else {
+        lv_label_set_text(instructions, "Get pairing code from SSIM\nSettings > Terminals > Add Terminal");
+    }
     lv_obj_set_style_text_color(instructions, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(instructions, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_align(instructions, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(instructions, LV_ALIGN_TOP_MID, 0, 38);
+    lv_obj_align(instructions, LV_ALIGN_TOP_MID, 0, topMargin + 22);
 
-    // Pairing code text area
+    // Pairing code text area - responsive sizing
     pairing_code_ta = lv_textarea_create(current_screen);
-    lv_obj_set_size(pairing_code_ta, 280, 55);
-    lv_obj_align(pairing_code_ta, LV_ALIGN_TOP_MID, 0, 90);
-    lv_textarea_set_placeholder_text(pairing_code_ta, "XXXXXX");
+    lv_obj_set_size(pairing_code_ta, contentWidth, isRoundDisplay ? 40 : 50);
+    lv_obj_align(pairing_code_ta, LV_ALIGN_TOP_MID, 0, topMargin + (isRoundDisplay ? 45 : 65));
+    lv_textarea_set_placeholder_text(pairing_code_ta, "000000");
     lv_textarea_set_one_line(pairing_code_ta, true);
-    lv_textarea_set_max_length(pairing_code_ta, 12);
+    lv_textarea_set_max_length(pairing_code_ta, 8);
+    lv_textarea_set_accepted_chars(pairing_code_ta, "0123456789");  // Numbers only
     lv_obj_set_style_bg_color(pairing_code_ta, lv_color_hex(0x2A2A2A), 0);
     lv_obj_set_style_text_color(pairing_code_ta, lv_color_white(), 0);
-    lv_obj_set_style_text_font(pairing_code_ta, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(pairing_code_ta, isRoundDisplay ? &lv_font_montserrat_20 : &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_align(pairing_code_ta, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_border_color(pairing_code_ta, lv_color_hex(0x4CAF50), LV_STATE_FOCUSED);
 
-    // Create keyboard (number mode for pairing codes)
+    // Create numeric keyboard for PIN entry
     pairing_keyboard = lv_keyboard_create(current_screen);
-    lv_obj_set_size(pairing_keyboard, 368, 260);
-    lv_obj_align(pairing_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_size(pairing_keyboard, kb_width, kb_height);
+    lv_obj_align(pairing_keyboard, LV_ALIGN_BOTTOM_MID, 0, isRoundDisplay ? -30 : 0);
     lv_keyboard_set_textarea(pairing_keyboard, pairing_code_ta);
-    lv_keyboard_set_mode(pairing_keyboard, LV_KEYBOARD_MODE_TEXT_UPPER);  // Uppercase for codes
+    lv_keyboard_set_mode(pairing_keyboard, LV_KEYBOARD_MODE_NUMBER);  // Numeric keypad for PIN
     lv_obj_add_event_cb(pairing_keyboard, pairing_keyboard_cb, LV_EVENT_ALL, NULL);
 
     // Style the keyboard
     lv_obj_set_style_bg_color(pairing_keyboard, lv_color_hex(0x2A2A2A), 0);
     lv_obj_set_style_bg_color(pairing_keyboard, lv_color_hex(0x3A3A3A), LV_PART_ITEMS);
     lv_obj_set_style_text_color(pairing_keyboard, lv_color_white(), LV_PART_ITEMS);
+    if (isRoundDisplay) {
+        lv_obj_set_style_text_font(pairing_keyboard, &lv_font_montserrat_16, LV_PART_ITEMS);
+    }
 }
 
 void showConnectingScreen() {
@@ -1387,10 +1404,17 @@ void showIdleScreen() {
 
     lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
 
-    // Settings gear button (top-right)
+    // Detect round display
+    bool isRoundDisplay = (LCD_WIDTH == LCD_HEIGHT && LCD_WIDTH <= 400);
+
+    // Settings gear button - top-center on round displays, top-right on others
     lv_obj_t *settings_btn = lv_btn_create(current_screen);
     lv_obj_set_size(settings_btn, 44, 44);
-    lv_obj_align(settings_btn, LV_ALIGN_TOP_RIGHT, -10, 10);
+    if (isRoundDisplay) {
+        lv_obj_align(settings_btn, LV_ALIGN_TOP_MID, 0, 45);  // Center top, inside visible area
+    } else {
+        lv_obj_align(settings_btn, LV_ALIGN_TOP_RIGHT, -10, 10);
+    }
     lv_obj_set_style_bg_color(settings_btn, lv_color_hex(0x333333), 0);
     lv_obj_set_style_bg_opa(settings_btn, LV_OPA_80, 0);
     lv_obj_set_style_radius(settings_btn, 22, 0);
@@ -1482,36 +1506,43 @@ void showSettingsScreen() {
 
     lv_obj_set_style_bg_color(current_screen, lv_color_hex(0x1A1A1A), 0);
 
-    // Header with back button
-    lv_obj_t *back_btn = lv_btn_create(current_screen);
-    lv_obj_set_size(back_btn, 70, 36);
-    lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 10, 10);
-    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x424242), 0);
-    lv_obj_set_style_radius(back_btn, 6, 0);
-    lv_obj_add_event_cb(back_btn, settings_back_btn_handler, LV_EVENT_CLICKED, NULL);
+    // Detect round display
+    bool isRoundDisplay = (LCD_WIDTH == LCD_HEIGHT && LCD_WIDTH <= 400);
+    int contentWidth = isRoundDisplay ? 260 : (LCD_WIDTH - 40);
+    int labelMargin = isRoundDisplay ? 50 : 20;
 
-    lv_obj_t *back_label = lv_label_create(back_btn);
-    lv_label_set_text(back_label, LV_SYMBOL_LEFT " Back");
-    lv_obj_set_style_text_color(back_label, lv_color_white(), 0);
-    lv_obj_center(back_label);
+    // Header with back button (hide on round display - corners cut off)
+    if (!isRoundDisplay) {
+        lv_obj_t *back_btn = lv_btn_create(current_screen);
+        lv_obj_set_size(back_btn, 70, 36);
+        lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 10, 10);
+        lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x424242), 0);
+        lv_obj_set_style_radius(back_btn, 6, 0);
+        lv_obj_add_event_cb(back_btn, settings_back_btn_handler, LV_EVENT_CLICKED, NULL);
+
+        lv_obj_t *back_label = lv_label_create(back_btn);
+        lv_label_set_text(back_label, LV_SYMBOL_LEFT " Back");
+        lv_obj_set_style_text_color(back_label, lv_color_white(), 0);
+        lv_obj_center(back_label);
+    }
 
     // Title
     lv_obj_t *title = lv_label_create(current_screen);
     lv_label_set_text(title, "Settings");
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 15);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, isRoundDisplay ? 40 : 15);
 
-    int y_offset = 70;
+    int y_offset = isRoundDisplay ? 85 : 70;
 
     // Brightness section
     lv_obj_t *bright_label = lv_label_create(current_screen);
     lv_label_set_text(bright_label, "Brightness");
     lv_obj_set_style_text_color(bright_label, lv_color_hex(0xCCCCCC), 0);
-    lv_obj_align(bright_label, LV_ALIGN_TOP_LEFT, 20, y_offset);
+    lv_obj_align(bright_label, LV_ALIGN_TOP_LEFT, labelMargin, y_offset);
 
     brightness_slider = lv_slider_create(current_screen);
-    lv_obj_set_size(brightness_slider, LCD_WIDTH - 60, 20);
+    lv_obj_set_size(brightness_slider, contentWidth, 20);
     lv_obj_align(brightness_slider, LV_ALIGN_TOP_MID, 0, y_offset + 25);
     lv_slider_set_range(brightness_slider, 20, 255);  // Min 20 to prevent completely dark
     lv_slider_set_value(brightness_slider, displayBrightness, LV_ANIM_OFF);
@@ -1520,17 +1551,17 @@ void showSettingsScreen() {
     lv_obj_set_style_bg_color(brightness_slider, lv_color_white(), LV_PART_KNOB);
     lv_obj_add_event_cb(brightness_slider, settings_brightness_handler, LV_EVENT_VALUE_CHANGED, NULL);
 
-    y_offset += 70;
+    y_offset += isRoundDisplay ? 60 : 70;
 
     // Sound section
     lv_obj_t *sound_label = lv_label_create(current_screen);
     lv_label_set_text(sound_label, "Sound Effects");
     lv_obj_set_style_text_color(sound_label, lv_color_hex(0xCCCCCC), 0);
-    lv_obj_align(sound_label, LV_ALIGN_TOP_LEFT, 20, y_offset);
+    lv_obj_align(sound_label, LV_ALIGN_TOP_LEFT, labelMargin, y_offset);
 
     sound_switch = lv_switch_create(current_screen);
     lv_obj_set_size(sound_switch, 60, 30);
-    lv_obj_align(sound_switch, LV_ALIGN_TOP_RIGHT, -20, y_offset - 5);
+    lv_obj_align(sound_switch, LV_ALIGN_TOP_RIGHT, isRoundDisplay ? -50 : -20, y_offset - 5);
     if (soundEnabled) {
         lv_obj_add_state(sound_switch, LV_STATE_CHECKED);
     }
@@ -1538,11 +1569,11 @@ void showSettingsScreen() {
     lv_obj_set_style_bg_color(sound_switch, lv_color_hex(0x4CAF50), (int)LV_PART_INDICATOR | (int)LV_STATE_CHECKED);
     lv_obj_add_event_cb(sound_switch, settings_sound_handler, LV_EVENT_VALUE_CHANGED, NULL);
 
-    y_offset += 60;
+    y_offset += isRoundDisplay ? 50 : 60;
 
     // WiFi Settings button
     lv_obj_t *wifi_btn = lv_btn_create(current_screen);
-    lv_obj_set_size(wifi_btn, LCD_WIDTH - 40, 44);
+    lv_obj_set_size(wifi_btn, contentWidth, 44);
     lv_obj_align(wifi_btn, LV_ALIGN_TOP_MID, 0, y_offset);
     lv_obj_set_style_bg_color(wifi_btn, lv_color_hex(0x333333), 0);
     lv_obj_set_style_radius(wifi_btn, 8, 0);
@@ -1553,7 +1584,7 @@ void showSettingsScreen() {
     lv_obj_set_style_text_color(wifi_icon, lv_color_white(), 0);
     lv_obj_center(wifi_icon);
 
-    y_offset += 60;
+    y_offset += isRoundDisplay ? 50 : 60;
 
     // Environment indicator
     const ServerConfig* config = getServerConfig();
@@ -1562,24 +1593,25 @@ void showSettingsScreen() {
     snprintf(env_text, sizeof(env_text), "Environment: %s", config->displayName);
     lv_label_set_text(env_label, env_text);
     lv_obj_set_style_text_color(env_label, lv_color_hex(0x888888), 0);
-    lv_obj_align(env_label, LV_ALIGN_TOP_LEFT, 20, y_offset);
+    lv_obj_align(env_label, isRoundDisplay ? LV_ALIGN_TOP_MID : LV_ALIGN_TOP_LEFT, isRoundDisplay ? 0 : 20, y_offset);
 
-    y_offset += 30;
-
-    // Terminal info
-    lv_obj_t *info_label = lv_label_create(current_screen);
-    char info_text[128];
-    snprintf(info_text, sizeof(info_text), "Firmware: v%s\nTerminal: %.8s...",
-             FIRMWARE_VERSION, terminalId.isEmpty() ? "Not paired" : terminalId.c_str());
-    lv_label_set_text(info_label, info_text);
-    lv_obj_set_style_text_color(info_label, lv_color_hex(0x666666), 0);
-    lv_obj_set_style_text_font(info_label, &lv_font_montserrat_12, 0);
-    lv_obj_align(info_label, LV_ALIGN_TOP_LEFT, 20, y_offset);
+    // Terminal info - skip on round displays (not enough space)
+    if (!isRoundDisplay) {
+        y_offset += 30;
+        lv_obj_t *info_label = lv_label_create(current_screen);
+        char info_text[128];
+        snprintf(info_text, sizeof(info_text), "Firmware: v%s\nTerminal: %.8s...",
+                 FIRMWARE_VERSION, terminalId.isEmpty() ? "Not paired" : terminalId.c_str());
+        lv_label_set_text(info_label, info_text);
+        lv_obj_set_style_text_color(info_label, lv_color_hex(0x666666), 0);
+        lv_obj_set_style_text_font(info_label, &lv_font_montserrat_12, 0);
+        lv_obj_align(info_label, LV_ALIGN_TOP_LEFT, 20, y_offset);
+    }
 
     // Save button at bottom
     lv_obj_t *save_btn = lv_btn_create(current_screen);
-    lv_obj_set_size(save_btn, LCD_WIDTH - 40, 48);
-    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, 0, -20);
+    lv_obj_set_size(save_btn, contentWidth, 48);
+    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, 0, isRoundDisplay ? -45 : -20);
     lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x4A90D9), 0);
     lv_obj_set_style_radius(save_btn, 8, 0);
     lv_obj_add_event_cb(save_btn, settings_save_handler, LV_EVENT_CLICKED, NULL);
@@ -1593,7 +1625,7 @@ void showSettingsScreen() {
 
 // Static buffer for QR code canvas (allocated once to avoid fragmentation)
 static lv_color_t *qr_canvas_buf = nullptr;
-static const int QR_CANVAS_SIZE = 240;  // Canvas size in pixels
+static int qr_canvas_alloc_size = 0;  // Track allocated size
 
 void showQrScreen(const char *qrData, int amount, const char *currency, const char *description) {
     Serial.printf("UI: QR screen - Amount: %d %s, URL: %s\n", amount, currency, qrData);
@@ -1602,12 +1634,18 @@ void showQrScreen(const char *qrData, int amount, const char *currency, const ch
 
     lv_obj_set_style_bg_color(current_screen, lv_color_black(), 0);
 
-    // Title
+    // Detect round display (square with small dimensions)
+    bool isRoundDisplay = (LCD_WIDTH == LCD_HEIGHT && LCD_WIDTH <= 400);
+
+    // QR canvas size - smaller for round displays to fit amount below
+    int qrCanvasSize = isRoundDisplay ? 200 : 240;
+
+    // Title - position with space above QR code
     lv_obj_t *title = lv_label_create(current_screen);
     lv_label_set_text(title, "Scan to Pay");
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 15);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);  // Larger font
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, isRoundDisplay ? 50 : 15);
 
     // Generate QR Code using ricmoo/QRCode library
     // Version 6 = 41x41 modules, can encode ~84 alphanumeric chars
@@ -1628,33 +1666,38 @@ void showQrScreen(const char *qrData, int amount, const char *currency, const ch
 
     Serial.printf("QR generated: %dx%d modules\n", qrcode.size, qrcode.size);
 
-    // Allocate canvas buffer if not already done
-    if (qr_canvas_buf == nullptr) {
+    // Allocate canvas buffer if not already done or if size changed
+    int requiredSize = qrCanvasSize * qrCanvasSize * sizeof(lv_color_t);
+    if (qr_canvas_buf == nullptr || qr_canvas_alloc_size < requiredSize) {
+        if (qr_canvas_buf != nullptr) {
+            heap_caps_free(qr_canvas_buf);
+        }
         qr_canvas_buf = (lv_color_t *)heap_caps_malloc(
-            QR_CANVAS_SIZE * QR_CANVAS_SIZE * sizeof(lv_color_t),
+            requiredSize,
             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
         );
         if (qr_canvas_buf == nullptr) {
             Serial.println("ERROR: Failed to allocate QR canvas buffer!");
             return;
         }
+        qr_canvas_alloc_size = requiredSize;
     }
 
-    // Create canvas for QR code
+    // Create canvas for QR code - shift down on round displays to create gap from title
     lv_obj_t *canvas = lv_canvas_create(current_screen);
-    lv_canvas_set_buffer(canvas, qr_canvas_buf, QR_CANVAS_SIZE, QR_CANVAS_SIZE, LV_IMG_CF_TRUE_COLOR);
-    lv_obj_align(canvas, LV_ALIGN_CENTER, 0, -15);
+    lv_canvas_set_buffer(canvas, qr_canvas_buf, qrCanvasSize, qrCanvasSize, LV_IMG_CF_TRUE_COLOR);
+    lv_obj_align(canvas, LV_ALIGN_CENTER, 0, isRoundDisplay ? 20 : -15);
 
     // Fill with white background
     lv_canvas_fill_bg(canvas, lv_color_white(), LV_OPA_COVER);
 
     // Calculate module size to fit in canvas with margin
     int margin = 8;  // White border around QR
-    int availableSize = QR_CANVAS_SIZE - (margin * 2);
+    int availableSize = qrCanvasSize - (margin * 2);
     int moduleSize = availableSize / qrcode.size;
     int qrPixelSize = moduleSize * qrcode.size;
-    int offsetX = (QR_CANVAS_SIZE - qrPixelSize) / 2;
-    int offsetY = (QR_CANVAS_SIZE - qrPixelSize) / 2;
+    int offsetX = (qrCanvasSize - qrPixelSize) / 2;
+    int offsetY = (qrCanvasSize - qrPixelSize) / 2;
 
     // Draw QR code modules
     lv_draw_rect_dsc_t rect_dsc;
@@ -1682,17 +1725,22 @@ void showQrScreen(const char *qrData, int amount, const char *currency, const ch
         }
     }
 
-    // Amount display
+    // Amount display - smaller font and positioned relative to QR on round displays
     char amount_str[32];
     snprintf(amount_str, sizeof(amount_str), "$%.2f %s", amount / 100.0f, currency);
     lv_obj_t *amount_label = lv_label_create(current_screen);
     lv_label_set_text(amount_label, amount_str);
     lv_obj_set_style_text_color(amount_label, lv_color_white(), 0);
-    lv_obj_set_style_text_font(amount_label, &lv_font_montserrat_32, 0);
-    lv_obj_align(amount_label, LV_ALIGN_BOTTOM_MID, 0, -60);
+    lv_obj_set_style_text_font(amount_label, isRoundDisplay ? &lv_font_montserrat_20 : &lv_font_montserrat_32, 0);
+    // On round displays, position just below QR code; on others, use bottom alignment
+    if (isRoundDisplay) {
+        lv_obj_align_to(amount_label, canvas, LV_ALIGN_OUT_BOTTOM_MID, 0, 8);
+    } else {
+        lv_obj_align(amount_label, LV_ALIGN_BOTTOM_MID, 0, -60);
+    }
 
-    // Description (if provided)
-    if (description && strlen(description) > 0) {
+    // Description (if provided) - skip on round displays (not enough space)
+    if (!isRoundDisplay && description && strlen(description) > 0) {
         lv_obj_t *desc_label = lv_label_create(current_screen);
         lv_label_set_text(desc_label, description);
         lv_obj_set_style_text_color(desc_label, lv_color_hex(0xAAAAAA), 0);
@@ -1953,3 +2001,122 @@ void playResultSound(const char *status) {
 }
 
 #endif // HAS_AUDIO_ES8311
+
+// =============================================================================
+// Audio - PCM5101 DAC via I2S (no I2C config needed, just I2S data)
+// =============================================================================
+#if HAS_AUDIO_PCM5101
+
+static bool audioInitialized = false;
+static const int SAMPLE_RATE = 44100;
+static const int I2S_PORT = I2S_NUM_0;
+
+void initAudio() {
+    Serial.println("Audio: Initializing PCM5101 DAC (I2S only)...");
+
+    // PCM5101 doesn't need I2C configuration - just set up I2S
+    i2s_config_t i2s_config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+        .sample_rate = SAMPLE_RATE,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 4,
+        .dma_buf_len = 256,
+        .use_apll = false,
+        .tx_desc_auto_clear = true,
+        .fixed_mclk = 0
+    };
+
+    i2s_pin_config_t pin_config = {
+        .mck_io_num = I2S_PIN_NO_CHANGE,
+        .bck_io_num = I2S_BCLK,
+        .ws_io_num = I2S_LRCLK,
+        .data_out_num = I2S_DOUT,
+        .data_in_num = I2S_DIN
+    };
+
+    esp_err_t err = i2s_driver_install((i2s_port_t)I2S_PORT, &i2s_config, 0, NULL);
+    if (err != ESP_OK) {
+        Serial.printf("Audio: I2S driver install failed: %d\n", err);
+        return;
+    }
+
+    err = i2s_set_pin((i2s_port_t)I2S_PORT, &pin_config);
+    if (err != ESP_OK) {
+        Serial.printf("Audio: I2S pin config failed: %d\n", err);
+        return;
+    }
+
+    audioInitialized = true;
+    Serial.println("Audio: PCM5101 DAC initialized");
+}
+
+void playTone(int frequency, int durationMs) {
+    if (!audioInitialized || !soundEnabled) return;
+
+    const int numSamples = (SAMPLE_RATE * durationMs) / 1000;
+    const float amplitude = 16000.0f;  // Higher volume for PCM5101
+    const float twoPiF = 2.0f * PI * frequency / SAMPLE_RATE;
+
+    int16_t *samples = (int16_t *)heap_caps_malloc(512 * sizeof(int16_t), MALLOC_CAP_DEFAULT);
+    if (!samples) {
+        Serial.println("Audio: Failed to allocate sample buffer");
+        return;
+    }
+
+    int samplesWritten = 0;
+    while (samplesWritten < numSamples) {
+        int batchSize = min(256, numSamples - samplesWritten);
+
+        for (int i = 0; i < batchSize; i++) {
+            float sample = amplitude * sinf(twoPiF * (samplesWritten + i));
+            // Stereo: duplicate sample for left and right channels
+            samples[i * 2] = (int16_t)sample;      // Left
+            samples[i * 2 + 1] = (int16_t)sample;  // Right
+        }
+
+        size_t bytesWritten = 0;
+        i2s_write((i2s_port_t)I2S_PORT, samples, batchSize * 4, &bytesWritten, portMAX_DELAY);
+        samplesWritten += batchSize;
+    }
+
+    heap_caps_free(samples);
+}
+
+void playResultSound(const char *status) {
+    if (!soundEnabled) {
+        Serial.printf("Audio: Sound disabled, skipping %s sound\n", status);
+        return;
+    }
+
+    Serial.printf("Audio: Playing %s sound\n", status);
+
+    if (strcmp(status, "approved") == 0) {
+        // Happy ascending tones
+        playTone(523, 100);  // C5
+        delay(50);
+        playTone(659, 100);  // E5
+        delay(50);
+        playTone(784, 150);  // G5
+    } else if (strcmp(status, "declined") == 0) {
+        // Sad descending tones
+        playTone(392, 200);  // G4
+        delay(100);
+        playTone(294, 300);  // D4
+    } else if (strcmp(status, "cancelled") == 0) {
+        // Single neutral beep
+        playTone(440, 200);  // A4
+    } else if (strcmp(status, "expired") == 0) {
+        // Two short beeps
+        playTone(349, 100);  // F4
+        delay(100);
+        playTone(349, 100);  // F4
+    } else {
+        // Default: single beep
+        playTone(440, 150);  // A4
+    }
+}
+
+#endif // HAS_AUDIO_PCM5101

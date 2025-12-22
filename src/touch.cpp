@@ -5,6 +5,7 @@
  * Supports:
  * - FT3168 (on ESP32-S3-Touch-AMOLED-1.8): FocalTech capacitive touch at 0x38
  * - GT911 (on ESP32-S3-Touch-LCD-7): Goodix capacitive touch at 0x5D
+ * - CST816 (on ESP32-S3-Touch-LCD-1.85C-BOX): Hynitron capacitive touch at 0x15
  */
 
 #include "touch.h"
@@ -236,6 +237,205 @@ static bool touch_hw_read(uint16_t *x, uint16_t *y, bool *pressed) {
 }
 
 #endif // TOUCH_DRIVER_GT911
+
+// =============================================================================
+// CST816 Touch Controller (LCD-1.85C-BOX)
+// =============================================================================
+
+#if TOUCH_DRIVER_CST816
+
+// CST816 register definitions
+#define CST816_REG_GESTURE      0x01    // Gesture ID
+#define CST816_REG_FINGER_NUM   0x02    // Number of touch points
+#define CST816_REG_XH           0x03    // X high byte (bits 0-3) + event flag (bits 6-7)
+#define CST816_REG_XL           0x04    // X low byte
+#define CST816_REG_YH           0x05    // Y high byte (bits 0-3)
+#define CST816_REG_YL           0x06    // Y low byte
+#define CST816_REG_CHIP_ID      0xA7    // Chip ID register
+#define CST816_REG_FW_VER       0xA9    // Firmware version
+#define CST816_REG_DIS_AUTOSLEEP 0xFE   // Disable auto-sleep
+
+// TCA9554 register definitions
+#define TCA9554_OUTPUT_REG      0x01
+
+static bool cst_read_reg(uint8_t reg, uint8_t *data, uint8_t len) {
+    Wire.beginTransmission(TOUCH_I2C_ADDR);
+    Wire.write(reg);
+    if (Wire.endTransmission(false) != 0) {
+        return false;
+    }
+
+    Wire.requestFrom((uint8_t)TOUCH_I2C_ADDR, (uint8_t)len);
+    for (uint8_t i = 0; i < len && Wire.available(); i++) {
+        data[i] = Wire.read();
+    }
+
+    return true;
+}
+
+static bool cst_write_reg(uint8_t reg, uint8_t data) {
+    Wire.beginTransmission(TOUCH_I2C_ADDR);
+    Wire.write(reg);
+    Wire.write(data);
+    return Wire.endTransmission() == 0;
+}
+
+// Read TCA9554 output register
+static uint8_t tca9554_read_output() {
+    Wire.beginTransmission(EXPANDER_I2C_ADDR);
+    Wire.write(TCA9554_OUTPUT_REG);
+    Wire.endTransmission();
+    Wire.requestFrom((uint8_t)EXPANDER_I2C_ADDR, (uint8_t)1);
+    return Wire.read();
+}
+
+// Write TCA9554 output register
+static void tca9554_write_output(uint8_t value) {
+    Wire.beginTransmission(EXPANDER_I2C_ADDR);
+    Wire.write(TCA9554_OUTPUT_REG);
+    Wire.write(value);
+    Wire.endTransmission();
+}
+
+// Set a single TCA9554 pin without affecting others
+static void tca9554_set_pin(uint8_t pin_bit, bool high) {
+    uint8_t current = tca9554_read_output();
+    if (high) {
+        current |= (1 << pin_bit);
+    } else {
+        current &= ~(1 << pin_bit);
+    }
+    tca9554_write_output(current);
+}
+
+// Hardware reset CST816 via TCA9554 expander
+static void cst816_hw_reset() {
+    Serial.println("Resetting CST816 via TCA9554...");
+    tca9554_set_pin(EXP_PIN_TP_RST, false);  // Assert reset (low)
+    delay(10);
+    tca9554_set_pin(EXP_PIN_TP_RST, true);   // Release reset (high)
+    delay(50);  // Wait for touch controller to initialize
+}
+
+// Disable auto-sleep mode
+static void cst816_disable_autosleep() {
+    // Reset first to ensure proper state
+    cst816_hw_reset();
+    // Write a non-zero value to disable auto-sleep
+    uint8_t value = 10;  // Waveshare uses this value
+    if (cst_write_reg(CST816_REG_DIS_AUTOSLEEP, value)) {
+        Serial.println("CST816 auto-sleep disabled");
+    } else {
+        Serial.println("WARNING: Failed to disable CST816 auto-sleep");
+    }
+}
+
+static bool touch_hw_init() {
+    Serial.println("Initializing CST816 touch controller...");
+
+    // Hardware reset via TCA9554 expander
+    cst816_hw_reset();
+
+    // Configure interrupt pin as input with pullup
+    #if TOUCH_INT >= 0
+    pinMode(TOUCH_INT, INPUT_PULLUP);
+    Serial.printf("Touch interrupt on GPIO %d\n", TOUCH_INT);
+    #endif
+
+    // Check if device responds
+    Wire.beginTransmission(TOUCH_I2C_ADDR);
+    uint8_t error = Wire.endTransmission();
+
+    if (error != 0) {
+        // Try alternate address
+        #ifdef TOUCH_I2C_ADDR_ALT
+        Serial.printf("CST816 not at 0x%02X, trying alternate 0x%02X...\n",
+                      TOUCH_I2C_ADDR, TOUCH_I2C_ADDR_ALT);
+        Wire.beginTransmission(TOUCH_I2C_ADDR_ALT);
+        error = Wire.endTransmission();
+        #endif
+
+        if (error != 0) {
+            Serial.printf("ERROR: CST816 not found (error %d)\n", error);
+            return false;
+        }
+    }
+
+    Serial.printf("CST816 found at 0x%02X\n", TOUCH_I2C_ADDR);
+
+    // Disable auto-sleep (must be done after reset)
+    cst816_disable_autosleep();
+
+    // Read chip ID
+    uint8_t chip_id = 0;
+    if (!cst_read_reg(CST816_REG_CHIP_ID, &chip_id, 1)) {
+        Serial.println("WARNING: Failed to read CST816 chip ID");
+    } else {
+        Serial.printf("CST816 chip ID: 0x%02X\n", chip_id);
+    }
+
+    // Read firmware version
+    uint8_t fw_ver = 0;
+    cst_read_reg(CST816_REG_FW_VER, &fw_ver, 1);
+    Serial.printf("CST816 firmware: 0x%02X\n", fw_ver);
+
+    Serial.println("CST816 initialized");
+    return true;
+}
+
+static bool touch_hw_read(uint16_t *x, uint16_t *y, bool *pressed) {
+    // Read touch data (6 bytes starting from FINGER_NUM)
+    uint8_t buf[6];
+    if (!cst_read_reg(CST816_REG_FINGER_NUM, buf, 6)) {
+        *pressed = false;
+        return false;
+    }
+
+    // buf[0] = finger count
+    // buf[1] = X high (bits 0-3) + event flag (bits 6-7)
+    // buf[2] = X low
+    // buf[3] = Y high (bits 0-3)
+    // buf[4] = Y low
+
+    uint8_t finger_count = buf[0] & 0x0F;
+
+    if (finger_count == 0) {
+        *pressed = false;
+        return true;
+    }
+
+    // Check event flag (bits 6-7 of XH register)
+    // 0 = press down, 1 = lift up, 2 = contact
+    uint8_t event_flag = (buf[1] >> 6) & 0x03;
+    if (event_flag == 1) {  // Lift up - no touch
+        *pressed = false;
+        return true;
+    }
+
+    // Extract coordinates
+    uint16_t raw_x = ((buf[1] & 0x0F) << 8) | buf[2];
+    uint16_t raw_y = ((buf[3] & 0x0F) << 8) | buf[4];
+
+    // Filter edge touches (round display may have phantom touches at edges)
+    const uint16_t EDGE_MARGIN = 5;
+    if (raw_x < EDGE_MARGIN || raw_x >= (LCD_WIDTH - EDGE_MARGIN) ||
+        raw_y < EDGE_MARGIN || raw_y >= (LCD_HEIGHT - EDGE_MARGIN)) {
+        *pressed = false;
+        return true;
+    }
+
+    // Clamp to display bounds
+    if (raw_x >= LCD_WIDTH) raw_x = LCD_WIDTH - 1;
+    if (raw_y >= LCD_HEIGHT) raw_y = LCD_HEIGHT - 1;
+
+    *x = raw_x;
+    *y = raw_y;
+    *pressed = true;
+
+    return true;
+}
+
+#endif // TOUCH_DRIVER_CST816
 
 // =============================================================================
 // LVGL Touchpad Read Callback

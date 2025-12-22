@@ -14,8 +14,10 @@
     #include "boards/waveshare_amoled_1_8.h"
 #elif defined(BOARD_WAVESHARE_LCD_7)
     #include "boards/waveshare_lcd_7.h"
+#elif defined(BOARD_WAVESHARE_LCD_1_85C_BOX)
+    #include "boards/waveshare_lcd_1_85c_box.h"
 #else
-    #error "No board defined! Add -DBOARD_WAVESHARE_AMOLED_1_8 or -DBOARD_WAVESHARE_LCD_7 to build_flags in platformio.ini"
+    #error "No board defined! Add -DBOARD_WAVESHARE_AMOLED_1_8, -DBOARD_WAVESHARE_LCD_7, or -DBOARD_WAVESHARE_LCD_1_85C_BOX to build_flags in platformio.ini"
 #endif
 
 // Common board interface validation
