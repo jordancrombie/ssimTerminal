@@ -30,7 +30,7 @@
 // =============================================================================
 // Configuration
 // =============================================================================
-#define FIRMWARE_VERSION    "0.5.0"
+#define FIRMWARE_VERSION    "0.6.3"
 #define HEARTBEAT_INTERVAL  30000   // 30 seconds
 #define RECONNECT_DELAY     5000    // 5 seconds
 #define RESULT_DISPLAY_MS   3000    // 3 seconds to show result
@@ -592,7 +592,7 @@ void connectWebSocket() {
     webSocket.enableHeartbeat(15000, 3000, 2);  // ping every 15s, timeout 3s, 2 retries
 
     // Skip SSL certificate validation (required for some servers)
-    webSocket.setExtraHeaders("User-Agent: ssimTerminal/0.5.0");
+    webSocket.setExtraHeaders("User-Agent: ssimTerminal/" FIRMWARE_VERSION);
 
     Serial.println("WebSocket connecting...");
 }
@@ -777,7 +777,7 @@ void handleServerMessage(const char *payload) {
 
         showResultScreen(status, message);
         transitionTo(TerminalState::RESULT);
-        playResultSound(status);
+        // Note: playResultSound is called inside showResultScreen()
     }
     else if (strcmp(type, "payment_complete") == 0) {
         // SSIM sends this when payment is finalized
@@ -787,7 +787,7 @@ void handleServerMessage(const char *payload) {
 
         Serial.printf("Payment complete: %s = %s\n", paymentId, status);
 
-        // Show appropriate result screen
+        // Show appropriate result screen (playResultSound is called inside)
         if (strcmp(status, "approved") == 0) {
             showResultScreen("approved", "Payment Successful");
         } else if (strcmp(status, "declined") == 0) {
@@ -796,7 +796,6 @@ void handleServerMessage(const char *payload) {
             showResultScreen(status, "");
         }
         transitionTo(TerminalState::RESULT);
-        playResultSound(status);
     }
     else if (strcmp(type, "config_update") == 0) {
         JsonObject p = doc["payload"];
@@ -1974,26 +1973,36 @@ static bool es8311WriteReg(uint8_t reg, uint8_t value) {
 void initAudio() {
     Serial.println("Audio: Initializing ES8311 codec...");
 
+    int errors = 0;
+
     // Reset ES8311
-    es8311WriteReg(ES8311_RESET_REG, 0x3F);
+    if (!es8311WriteReg(ES8311_RESET_REG, 0x3F)) errors++;
     delay(20);
-    es8311WriteReg(ES8311_RESET_REG, 0x00);
+    if (!es8311WriteReg(ES8311_RESET_REG, 0x00)) errors++;
     delay(20);
 
-    // Configure clock manager for I2S slave mode
-    es8311WriteReg(ES8311_CLK_MANAGER_REG1, 0x30);  // MCLK from I2S BCLK
-    es8311WriteReg(ES8311_CLK_MANAGER_REG2, 0x10);  // Clock divider
+    // Configure clock manager - derive clock from BCLK
+    // Register 0x01: bits 5-4 = 01 means MCLK from BCLK (0x1F = 0b00011111)
+    if (!es8311WriteReg(ES8311_CLK_MANAGER_REG1, 0x1F)) errors++;  // BCLK as clock source
+    if (!es8311WriteReg(ES8311_CLK_MANAGER_REG2, 0x00)) errors++;  // Default dividers
 
-    // Enable DAC and analog output
-    es8311WriteReg(ES8311_SYSTEM_REG0D, 0x01);  // Power up analog
-    es8311WriteReg(ES8311_SYSTEM_REG0E, 0x02);  // Enable DAC
-    es8311WriteReg(ES8311_SYSTEM_REG12, 0x00);  // Unmute DAC
-    es8311WriteReg(ES8311_SYSTEM_REG13, 0x10);  // Enable output
+    // Power up sequence
+    if (!es8311WriteReg(ES8311_SYSTEM_REG0D, 0x01)) errors++;  // Power up analog
+    delay(10);
+    if (!es8311WriteReg(ES8311_SYSTEM_REG0E, 0x02)) errors++;  // Enable DAC
+    if (!es8311WriteReg(ES8311_SYSTEM_REG12, 0x00)) errors++;  // Unmute DAC left
+    if (!es8311WriteReg(ES8311_SYSTEM_REG13, 0x10)) errors++;  // Enable headphone output
 
-    // Configure DAC volume
-    es8311WriteReg(ES8311_DAC_REG32, 0xBF);  // Set volume (0xBF = reasonable level)
+    // Configure DAC volume (0x00 = max, 0xBF = moderate)
+    if (!es8311WriteReg(ES8311_DAC_REG32, 0x00)) errors++;  // Max volume for testing
 
-    // Configure I2S
+    if (errors > 0) {
+        Serial.printf("Audio: ES8311 I2C write errors: %d\n", errors);
+    } else {
+        Serial.println("Audio: ES8311 registers configured");
+    }
+
+    // Configure I2S (no external MCLK - ES8311 derives from BCLK)
     i2s_config_t i2s_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
         .sample_rate = SAMPLE_RATE,
@@ -2001,7 +2010,7 @@ void initAudio() {
         .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 4,
+        .dma_buf_count = 8,
         .dma_buf_len = 256,
         .use_apll = false,
         .tx_desc_auto_clear = true,
@@ -2009,7 +2018,11 @@ void initAudio() {
     };
 
     i2s_pin_config_t pin_config = {
+#ifdef I2S_MCLK
+        .mck_io_num = I2S_MCLK,
+#else
         .mck_io_num = I2S_PIN_NO_CHANGE,
+#endif
         .bck_io_num = I2S_BCLK,
         .ws_io_num = I2S_LRCLK,
         .data_out_num = I2S_DOUT,
@@ -2027,6 +2040,12 @@ void initAudio() {
         Serial.printf("Audio: I2S pin config failed: %d\n", err);
         return;
     }
+
+#ifdef I2S_MCLK
+    Serial.printf("Audio: I2S configured with MCLK on GPIO%d\n", I2S_MCLK);
+#else
+    Serial.println("Audio: I2S configured without MCLK (using BCLK as clock source)");
+#endif
 
     audioInitialized = true;
     Serial.println("Audio: ES8311 codec initialized");

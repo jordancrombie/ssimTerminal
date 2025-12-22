@@ -69,6 +69,7 @@
 // Audio - ES8311 Codec
 // =============================================================================
 #define AUDIO_I2C_ADDR          0x18
+// Note: ES8311 configured to derive clock from BCLK (no external MCLK needed)
 #define I2S_BCLK                45
 #define I2S_LRCLK               46
 #define I2S_DOUT                40

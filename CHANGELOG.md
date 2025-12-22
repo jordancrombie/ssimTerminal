@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.3] - 2025-12-21
+
+### Fixed
+- **Duplicate audio playback** - Fixed playResultSound being called twice on payment complete
+  - Sound was triggered both in showResultScreen() and in the message handler
+  - Removed duplicate call from payment_complete handler
+
+### Verified
+- **Multi-device testing complete** - All three board variants tested and working
+  - AMOLED-1.8: Display, touch, battery indicator all functional
+  - LCD-1.85C-BOX: Display, touch, audio (PCM5101) all functional
+  - LCD-7: Display, touch functional (no audio hardware on this board)
+
+### Known Issues
+- **ES8311 audio not working on AMOLED-1.8** - Investigation ongoing
+  - I2C communication to ES8311 succeeds (no errors)
+  - Tried various clock configurations (MCLK, BCLK-derived)
+  - Audio works on LCD-1.85C-BOX (PCM5101 DAC), so I2S output is functional
+
+---
+
 ## [0.6.2] - 2025-12-21
 
 ### Added
