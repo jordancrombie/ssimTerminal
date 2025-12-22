@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.1] - 2025-12-21
+
+### Added
+- **ESP32-S3-Touch-LCD-1.85C-BOX support** - New PlatformIO environment
+  - `lcd-1_85c_box` environment for 360x360 round TFT display
+  - ST77916 QSPI display driver via ESP-IDF `esp_lcd` (Arduino_GFX lacks correct init)
+  - CST816 capacitive touch driver (I2C 0x15) with TCA9554 reset control
+  - PCM5101 audio DAC support (I2S output, no I2C configuration needed)
+  - Board config: `include/boards/waveshare_lcd_1_85c_box.h`
+- **Round display UI layouts** - Optimized for 360x360 circular visible area
+  - QR screen: Smaller 200px QR code, title at top with gap, amount below QR
+  - Settings screen: Narrower controls (260px), centered labels, save button moved up
+  - Idle screen: Gear icon centered at top (corners not visible on round display)
+  - Uses `isRoundDisplay` flag to detect 360x360 and similar displays
+
+### Changed
+- **PIN entry screen** - Now uses numeric keypad instead of full keyboard
+  - Numeric-only input with placeholder "000000"
+  - Responsive layout adapts to different screen sizes
+  - Smaller keyboard height on compact displays (360x360)
+  - Uses `LV_KEYBOARD_MODE_NUMBER` for streamlined PIN entry
+- **Display driver architecture** - Added `Arduino_ST77916_GFX` wrapper class
+  - Bridges ESP-IDF `esp_lcd` panel to LVGL via Arduino_GFX interface
+  - Handles byte-swapping for correct RGB565 color rendering
+
+---
+
 ## [0.6.0] - 2025-12-21
 
 ### Added

@@ -5,12 +5,21 @@
  * Supports:
  * - ESP32-S3-Touch-AMOLED-1.8: SH8601 QSPI AMOLED with TCA9554 expander
  * - ESP32-S3-Touch-LCD-7: ST7262 RGB LCD with CH422G expander
+ * - ESP32-S3-Touch-LCD-1.85C-BOX: ST77916 QSPI TFT with TCA9554 expander
  */
 
 #include "display.h"
 #include "pins_config.h"
 #include <Wire.h>
 #include <Arduino_GFX_Library.h>
+
+#if DISPLAY_DRIVER_ST77916
+// ESP-IDF esp_lcd for ST77916 (Arduino_GFX doesn't have correct init sequence)
+#include "driver/spi_master.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
+#include "drivers/esp_lcd_st77916.h"
+#endif
 
 // =============================================================================
 // Display Configuration
@@ -60,14 +69,21 @@ static bool init_expander() {
         return false;
     }
 
-    // Configure pins 0-3 as outputs
+    // Configure pins 0-3 as outputs (P4-7 as inputs)
     tca9554_config(0xF0);
 
-    // Reset sequence: assert reset (low), wait, release (high)
+    // Proper reset sequence for touch and display
+    // 1. Assert reset (all low)
     tca9554_write(0x00);
+    delay(50);  // Hold reset longer
+
+    // 2. Release LCD reset first, keep touch in reset
+    tca9554_write((1 << EXP_PIN_LCD_RST));  // Only LCD reset released
     delay(20);
-    tca9554_write(0x07);  // P0, P1, P2 = HIGH
-    delay(50);
+
+    // 3. Release touch reset
+    tca9554_write((1 << EXP_PIN_TP_RST) | (1 << EXP_PIN_LCD_RST));
+    delay(100);  // Give touch controller time to initialize
 
     Serial.println("TCA9554 expander initialized, display/touch reset complete");
     return true;
@@ -165,7 +181,7 @@ static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t 
     lv_disp_flush_ready(drv);
 }
 
-#if DISPLAY_TYPE_QSPI
+#if DISPLAY_DRIVER_SH8601
 // SH8601 requires coordinates to be even
 static void lvgl_rounder_cb(lv_disp_drv_t *drv, lv_area_t *area) {
     area->x1 = area->x1 & ~1;
@@ -179,7 +195,7 @@ static void lvgl_rounder_cb(lv_disp_drv_t *drv, lv_area_t *area) {
 // Display Initialization
 // =============================================================================
 
-#if DISPLAY_TYPE_QSPI
+#if DISPLAY_DRIVER_SH8601
 // SH8601 QSPI AMOLED initialization
 
 static bool init_display_hardware() {
@@ -217,6 +233,189 @@ static bool init_display_hardware() {
 
     // Clear to black before LVGL takes over
     gfx->fillScreen(0x0000);
+
+    return true;
+}
+
+#elif DISPLAY_DRIVER_ST77916
+// ST77916 QSPI TFT initialization (for LCD-1.85C-BOX)
+// Uses ESP-IDF esp_lcd for proper initialization (Arduino_GFX lacks correct init sequence)
+
+static uint8_t current_brightness = 255;
+static esp_lcd_panel_handle_t st77916_panel = nullptr;
+static esp_lcd_panel_io_handle_t st77916_io = nullptr;
+
+// Custom GFX wrapper for ST77916 esp_lcd panel
+class Arduino_ST77916_GFX : public Arduino_GFX {
+public:
+    Arduino_ST77916_GFX(int16_t w, int16_t h, esp_lcd_panel_handle_t panel)
+        : Arduino_GFX(w, h), _panel(panel), _w(w), _h(h) {}
+
+    bool begin(int32_t speed = 0) override { return true; }
+
+    void writePixelPreclipped(int16_t x, int16_t y, uint16_t color) override {
+        // Swap bytes for correct color
+        uint16_t swapped = ((color >> 8) & 0xFF) | ((color << 8) & 0xFF00);
+        esp_lcd_panel_draw_bitmap(_panel, x, y, x + 1, y + 1, &swapped);
+    }
+
+    void writeFillRectPreclipped(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) override {
+        // Swap bytes for correct color
+        uint16_t swapped = ((color >> 8) & 0xFF) | ((color << 8) & 0xFF00);
+        uint16_t *buf = (uint16_t *)heap_caps_malloc(w * h * 2, MALLOC_CAP_DMA);
+        if (buf) {
+            for (int i = 0; i < w * h; i++) {
+                buf[i] = swapped;
+            }
+            esp_lcd_panel_draw_bitmap(_panel, x, y, x + w, y + h, buf);
+            free(buf);
+        }
+    }
+
+    void draw16bitRGBBitmap(int16_t x, int16_t y, uint16_t *bitmap, int16_t w, int16_t h) override {
+        // Swap bytes for each pixel
+        size_t size = w * h;
+        for (size_t i = 0; i < size; i++) {
+            bitmap[i] = ((bitmap[i] >> 8) & 0xFF) | ((bitmap[i] << 8) & 0xFF00);
+        }
+        esp_lcd_panel_draw_bitmap(_panel, x, y, x + w, y + h, bitmap);
+    }
+
+    void displayOn() override {
+        esp_lcd_panel_disp_on_off(_panel, true);
+    }
+
+    void displayOff() override {
+        esp_lcd_panel_disp_on_off(_panel, false);
+    }
+
+private:
+    esp_lcd_panel_handle_t _panel;
+    int16_t _w, _h;
+};
+
+static bool init_display_hardware() {
+    Serial.println("Initializing ST77916 QSPI TFT via esp_lcd...");
+
+    // Configure backlight pin (direct GPIO, not via expander)
+    #if LCD_BL >= 0 && !LCD_BL_VIA_EXPANDER
+    ledcAttach(LCD_BL, 20000, 10);  // 20kHz, 10-bit resolution (like Waveshare)
+    ledcWrite(LCD_BL, 0);  // Start with backlight off
+    Serial.printf("Backlight PWM on GPIO %d\n", LCD_BL);
+    #endif
+
+    // Initialize SPI bus for QSPI
+    spi_bus_config_t spi_bus_cfg = {};
+    spi_bus_cfg.sclk_io_num = LCD_QSPI_CLK;
+    spi_bus_cfg.data0_io_num = LCD_QSPI_D0;
+    spi_bus_cfg.data1_io_num = LCD_QSPI_D1;
+    spi_bus_cfg.data2_io_num = LCD_QSPI_D2;
+    spi_bus_cfg.data3_io_num = LCD_QSPI_D3;
+    spi_bus_cfg.data4_io_num = -1;
+    spi_bus_cfg.data5_io_num = -1;
+    spi_bus_cfg.data6_io_num = -1;
+    spi_bus_cfg.data7_io_num = -1;
+    spi_bus_cfg.max_transfer_sz = LCD_WIDTH * LCD_HEIGHT * 2;
+    spi_bus_cfg.flags = SPICOMMON_BUSFLAG_MASTER;
+    spi_bus_cfg.intr_flags = 0;
+
+    esp_err_t ret = spi_bus_initialize(SPI2_HOST, &spi_bus_cfg, SPI_DMA_CH_AUTO);
+    if (ret != ESP_OK) {
+        Serial.printf("ERROR: SPI bus init failed: %d\n", ret);
+        return false;
+    }
+    Serial.println("SPI bus initialized");
+
+    // Configure panel IO
+    esp_lcd_panel_io_spi_config_t io_cfg = {};
+    io_cfg.cs_gpio_num = LCD_QSPI_CS;
+    io_cfg.dc_gpio_num = -1;  // QSPI mode, no DC pin
+    io_cfg.spi_mode = 0;
+    io_cfg.pclk_hz = 80 * 1000 * 1000;  // 80MHz like Waveshare demo
+    io_cfg.trans_queue_depth = 10;
+    io_cfg.on_color_trans_done = nullptr;
+    io_cfg.user_ctx = nullptr;
+    io_cfg.lcd_cmd_bits = 32;  // QSPI uses 32-bit commands
+    io_cfg.lcd_param_bits = 8;
+    io_cfg.flags.dc_low_on_data = 0;
+    io_cfg.flags.octal_mode = 0;
+    io_cfg.flags.quad_mode = 1;  // Enable QSPI mode
+    io_cfg.flags.sio_mode = 0;
+    io_cfg.flags.lsb_first = 0;
+    io_cfg.flags.cs_high_active = 0;
+
+    ret = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &io_cfg, &st77916_io);
+    if (ret != ESP_OK) {
+        Serial.printf("ERROR: Panel IO init failed: %d\n", ret);
+        return false;
+    }
+    Serial.println("Panel IO initialized");
+
+    // Configure vendor-specific settings
+    st77916_vendor_config_t vendor_cfg = {};
+    vendor_cfg.init_cmds = nullptr;      // Use default init sequence in driver
+    vendor_cfg.init_cmds_size = 0;
+    vendor_cfg.flags.use_qspi_interface = 1;
+
+    // Configure panel device
+    esp_lcd_panel_dev_config_t panel_cfg = {};
+    panel_cfg.reset_gpio_num = -1;  // Reset via TCA9554 expander
+    panel_cfg.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
+    panel_cfg.data_endian = LCD_RGB_DATA_ENDIAN_BIG;
+    panel_cfg.bits_per_pixel = 16;
+    panel_cfg.flags.reset_active_high = 0;
+    panel_cfg.vendor_config = &vendor_cfg;
+
+    ret = esp_lcd_new_panel_st77916(st77916_io, &panel_cfg, &st77916_panel);
+    if (ret != ESP_OK) {
+        Serial.printf("ERROR: Panel creation failed: %d\n", ret);
+        return false;
+    }
+    Serial.println("ST77916 panel created");
+
+    // Reset panel (uses software reset since HW reset is via expander)
+    ret = esp_lcd_panel_reset(st77916_panel);
+    if (ret != ESP_OK) {
+        Serial.printf("ERROR: Panel reset failed: %d\n", ret);
+        return false;
+    }
+
+    // Initialize panel with vendor-specific commands
+    ret = esp_lcd_panel_init(st77916_panel);
+    if (ret != ESP_OK) {
+        Serial.printf("ERROR: Panel init failed: %d\n", ret);
+        return false;
+    }
+    Serial.println("ST77916 panel initialized");
+
+    // Turn on display
+    esp_lcd_panel_disp_on_off(st77916_panel, true);
+
+    // Create GFX wrapper for LVGL
+    gfx = new Arduino_ST77916_GFX(LCD_WIDTH, LCD_HEIGHT, st77916_panel);
+
+    // Clear screen to black
+    uint16_t *black_buf = (uint16_t *)heap_caps_calloc(LCD_WIDTH * 10, sizeof(uint16_t), MALLOC_CAP_DMA);
+    if (black_buf) {
+        for (int y = 0; y < LCD_HEIGHT; y += 10) {
+            int h = (y + 10 <= LCD_HEIGHT) ? 10 : (LCD_HEIGHT - y);
+            esp_lcd_panel_draw_bitmap(st77916_panel, 0, y, LCD_WIDTH, y + h, black_buf);
+        }
+        free(black_buf);
+    }
+    Serial.println("Screen cleared to black");
+
+    // Fade in backlight
+    Serial.println("Fading in backlight...");
+    #if LCD_BL >= 0 && !LCD_BL_VIA_EXPANDER
+    for (int i = 0; i <= 1000; i += 20) {  // 10-bit PWM, max 1024
+        ledcWrite(LCD_BL, i);
+        delay(5);
+    }
+    ledcWrite(LCD_BL, 1024);  // Full brightness
+    current_brightness = 255;
+    #endif
+    Serial.println("Display backlight at max");
 
     return true;
 }
@@ -405,7 +604,7 @@ bool display_init() {
     disp_drv.hor_res = LCD_WIDTH;
     disp_drv.ver_res = LCD_HEIGHT;
     disp_drv.flush_cb = lvgl_flush_cb;
-#if DISPLAY_TYPE_QSPI
+#if DISPLAY_DRIVER_SH8601
     disp_drv.rounder_cb = lvgl_rounder_cb;  // SH8601 requires even coordinates
 #endif
     disp_drv.draw_buf = &draw_buf;
@@ -423,10 +622,18 @@ bool display_init() {
 }
 
 void display_set_brightness(uint8_t brightness) {
-#if DISPLAY_TYPE_QSPI
+#if DISPLAY_DRIVER_SH8601
     if (gfx) {
         gfx->Display_Brightness(brightness);
     }
+#elif DISPLAY_DRIVER_ST77916
+    #if LCD_BL >= 0 && !LCD_BL_VIA_EXPANDER
+    // Scale 0-255 brightness to 0-1024 for 10-bit PWM
+    uint32_t pwm_val = (brightness * 1024) / 255;
+    if (pwm_val > 1024) pwm_val = 1024;
+    ledcWrite(LCD_BL, pwm_val);
+    current_brightness = brightness;
+    #endif
 #else
     // RGB LCD: backlight is on/off via expander, no PWM brightness
     // Could be implemented via PWM if connected to GPIO
