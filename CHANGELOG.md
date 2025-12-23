@@ -2,6 +2,87 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.6] - 2025-12-22
+
+### Fixed
+- **LCD-1.85C-BOX audio now working** - Fixed I2S driver conflict
+  - Added `lib_ignore = ESP_I2S` to lcd-1_85c_box and lcd-7 environments
+  - Prevents PlatformIO from linking ESP_I2S library (conflicts with legacy driver)
+  - PCM5101 audio on LCD-1.85C-BOX verified working
+
+### Technical Notes
+- ESP_I2S.h (new Arduino I2S) and driver/i2s.h (legacy ESP-IDF) cannot coexist
+- AMOLED-1.8 uses ESP_I2S.h for ES8311 codec
+- LCD-1.85C-BOX uses legacy driver/i2s.h for PCM5101 DAC
+- `build_src_filter` excludes es8311.c, `lib_ignore` prevents library linking
+
+---
+
+## [0.6.5] - 2025-12-22
+
+### Fixed
+- **ES8311 audio now working on AMOLED-1.8** - Complete audio fix
+  - Added Waveshare ES8311 library (`es8311.c`, `es8311.h`, `es8311_reg.h`)
+  - Uses `ESP_I2S.h` library instead of legacy `driver/i2s.h` (required for ES8311)
+  - Correct I2S pin assignments from Waveshare demo: MCLK=16, BCLK=9, WS=45, DOUT=10, DIN=8
+  - PA (Power Amplifier) enable on GPIO 46
+  - Initialization order matches Waveshare demo exactly: PA → I2S → Wire.begin → ES8311
+
+### Technical Notes
+- ES8311 requires the new `ESP_I2S.h` Arduino library, not the legacy ESP-IDF `driver/i2s.h`
+- PCM5101 (on LCD-1.85C-BOX) still uses legacy `driver/i2s.h` - conditional includes prevent conflicts
+- **DO NOT MODIFY** the AMOLED-1.8 audio code - it is verified working
+
+---
+
+## [0.6.4] - 2025-12-21
+
+### Added
+- **Feature-based conditional UI** - Settings screen now only shows controls for supported features
+  - Sound toggle hidden on boards without audio hardware (LCD-7)
+  - Generic `HAS_AUDIO` flag in `board_config.h` combines ES8311 and PCM5101 support
+  - Pattern extensible for future features (BLE, NFC, etc.)
+
+---
+
+## [0.6.3] - 2025-12-21
+
+### Fixed
+- **Duplicate audio playback** - Fixed playResultSound being called twice on payment complete
+  - Sound was triggered both in showResultScreen() and in the message handler
+  - Removed duplicate call from payment_complete handler
+
+### Verified
+- **Multi-device testing complete** - All three board variants tested and working
+  - AMOLED-1.8: Display, touch, battery indicator all functional
+  - LCD-1.85C-BOX: Display, touch, audio (PCM5101) all functional
+  - LCD-7: Display, touch functional (no audio hardware on this board)
+
+---
+
+## [0.6.2] - 2025-12-21
+
+### Added
+- **Battery indicator** - Display battery status on AMOLED-1.8 board
+  - Idle screen shows battery icon and percentage (top-left on rectangular displays)
+  - Icon color changes based on level: green (>75%), light green (>50%), yellow (>25%), orange (>10%), red (<10%)
+  - Charging indicator (⚡ symbol) when connected to power and charging
+  - Falls back to USB icon when no battery detected but USB powered
+  - Settings screen shows detailed battery info (percentage, voltage, charging status)
+  - Heartbeat includes battery telemetry (percent, voltage, charging state, USB connection)
+
+### Fixed
+- **AMOLED display not working** - Fixed TCA9554 expander initialization regression
+  - P0 (OLED_EN) must be HIGH for AMOLED panel to display
+  - Added `EXP_PIN_OLED_EN` constant to board config for clarity
+  - Expander reset sequence now properly enables OLED, LCD reset, and touch reset
+  - **Root cause**: LCD-1.85C-BOX refactoring (v0.6.1) changed expander init from
+    `0x07` (P0+P1+P2) to `(1<<P1)|(1<<P2)` (P1+P2 only), dropping P0 which is
+    OLED_EN on AMOLED boards. This highlights the need for better board isolation
+    to prevent cross-board regressions.
+
+---
+
 ## [0.6.1] - 2025-12-21
 
 ### Added

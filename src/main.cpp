@@ -20,9 +20,15 @@
 #include <lvgl.h>
 #include <qrcode.h>
 #include <Wire.h>
-#include <driver/i2s.h>
 
 #include "pins_config.h"
+
+// I2S library - ES8311 needs ESP_I2S.h, PCM5101 needs legacy driver
+#if HAS_AUDIO_ES8311
+#include <ESP_I2S.h>
+#elif HAS_AUDIO_PCM5101
+#include <driver/i2s.h>
+#endif
 #include "pmu.h"
 #include "display.h"
 #include "touch.h"
@@ -30,7 +36,7 @@
 // =============================================================================
 // Configuration
 // =============================================================================
-#define FIRMWARE_VERSION    "0.5.0"
+#define FIRMWARE_VERSION    "0.6.6"  // LCD-1.85C-BOX audio working (lib_ignore fix)
 #define HEARTBEAT_INTERVAL  30000   // 30 seconds
 #define RECONNECT_DELAY     5000    // 5 seconds
 #define RESULT_DISPLAY_MS   3000    // 3 seconds to show result
@@ -592,7 +598,7 @@ void connectWebSocket() {
     webSocket.enableHeartbeat(15000, 3000, 2);  // ping every 15s, timeout 3s, 2 retries
 
     // Skip SSL certificate validation (required for some servers)
-    webSocket.setExtraHeaders("User-Agent: ssimTerminal/0.5.0");
+    webSocket.setExtraHeaders("User-Agent: ssimTerminal/" FIRMWARE_VERSION);
 
     Serial.println("WebSocket connecting...");
 }
@@ -777,7 +783,7 @@ void handleServerMessage(const char *payload) {
 
         showResultScreen(status, message);
         transitionTo(TerminalState::RESULT);
-        playResultSound(status);
+        // Note: playResultSound is called inside showResultScreen()
     }
     else if (strcmp(type, "payment_complete") == 0) {
         // SSIM sends this when payment is finalized
@@ -787,7 +793,7 @@ void handleServerMessage(const char *payload) {
 
         Serial.printf("Payment complete: %s = %s\n", paymentId, status);
 
-        // Show appropriate result screen
+        // Show appropriate result screen (playResultSound is called inside)
         if (strcmp(status, "approved") == 0) {
             showResultScreen("approved", "Payment Successful");
         } else if (strcmp(status, "declined") == 0) {
@@ -796,7 +802,6 @@ void handleServerMessage(const char *payload) {
             showResultScreen(status, "");
         }
         transitionTo(TerminalState::RESULT);
-        playResultSound(status);
     }
     else if (strcmp(type, "config_update") == 0) {
         JsonObject p = doc["payload"];
@@ -862,6 +867,17 @@ void sendHeartbeat() {
     payload["freeMemory"] = ESP.getFreeHeap();
     payload["wifiRssi"] = WiFi.RSSI();
     payload["ipAddress"] = WiFi.localIP().toString();
+
+    // Add battery info if available (only on boards with PMU)
+#if HAS_PMU_AXP2101
+    int batteryPercent = pmu_get_battery_percent();
+    if (batteryPercent >= 0) {
+        payload["batteryPercent"] = batteryPercent;
+        payload["batteryVoltage"] = pmu_get_battery_voltage();
+        payload["isCharging"] = pmu_is_charging();
+    }
+    payload["usbConnected"] = pmu_is_usb_connected();
+#endif
 
     String json;
     serializeJson(doc, json);
@@ -1427,6 +1443,70 @@ void showIdleScreen() {
     lv_obj_set_style_text_font(gear_icon, &lv_font_montserrat_20, 0);
     lv_obj_center(gear_icon);
 
+    // Battery indicator (only on boards with PMU)
+#if HAS_PMU_AXP2101
+    int batteryPercent = pmu_get_battery_percent();
+    bool isCharging = pmu_is_charging();
+    bool isUsbConnected = pmu_is_usb_connected();
+
+    // Create battery container
+    lv_obj_t *battery_container = lv_obj_create(current_screen);
+    lv_obj_remove_style_all(battery_container);
+    lv_obj_set_size(battery_container, 70, 24);
+    if (isRoundDisplay) {
+        lv_obj_align(battery_container, LV_ALIGN_BOTTOM_MID, 0, -45);  // Bottom center on round
+    } else {
+        lv_obj_align(battery_container, LV_ALIGN_TOP_LEFT, 10, 10);
+    }
+
+    // Battery icon based on level
+    lv_obj_t *battery_icon = lv_label_create(battery_container);
+    const char *batterySymbol;
+    lv_color_t batteryColor;
+
+    if (batteryPercent < 0) {
+        // Battery not detected
+        batterySymbol = LV_SYMBOL_USB;
+        batteryColor = lv_color_hex(0x888888);
+    } else if (isCharging) {
+        batterySymbol = LV_SYMBOL_CHARGE;
+        batteryColor = lv_color_hex(0x4CAF50);  // Green when charging
+    } else if (batteryPercent > 75) {
+        batterySymbol = LV_SYMBOL_BATTERY_FULL;
+        batteryColor = lv_color_hex(0x4CAF50);  // Green
+    } else if (batteryPercent > 50) {
+        batterySymbol = LV_SYMBOL_BATTERY_3;
+        batteryColor = lv_color_hex(0x8BC34A);  // Light green
+    } else if (batteryPercent > 25) {
+        batterySymbol = LV_SYMBOL_BATTERY_2;
+        batteryColor = lv_color_hex(0xFFC107);  // Yellow
+    } else if (batteryPercent > 10) {
+        batterySymbol = LV_SYMBOL_BATTERY_1;
+        batteryColor = lv_color_hex(0xFF9800);  // Orange
+    } else {
+        batterySymbol = LV_SYMBOL_BATTERY_EMPTY;
+        batteryColor = lv_color_hex(0xF44336);  // Red
+    }
+
+    lv_label_set_text(battery_icon, batterySymbol);
+    lv_obj_set_style_text_color(battery_icon, batteryColor, 0);
+    lv_obj_set_style_text_font(battery_icon, &lv_font_montserrat_16, 0);
+    lv_obj_align(battery_icon, LV_ALIGN_LEFT_MID, 0, 0);
+
+    // Battery percentage text
+    lv_obj_t *battery_text = lv_label_create(battery_container);
+    if (batteryPercent >= 0) {
+        lv_label_set_text_fmt(battery_text, "%d%%", batteryPercent);
+    } else if (isUsbConnected) {
+        lv_label_set_text(battery_text, "USB");
+    } else {
+        lv_label_set_text(battery_text, "--");
+    }
+    lv_obj_set_style_text_color(battery_text, lv_color_hex(0xCCCCCC), 0);
+    lv_obj_set_style_text_font(battery_text, &lv_font_montserrat_14, 0);
+    lv_obj_align(battery_text, LV_ALIGN_LEFT_MID, 22, 0);
+#endif
+
     // Main title
     lv_obj_t *title = lv_label_create(current_screen);
     lv_label_set_text(title, "Ready for Payment");
@@ -1457,7 +1537,9 @@ void showIdleScreen() {
 // Settings Screen
 // =============================================================================
 static lv_obj_t *brightness_slider = nullptr;
+#if HAS_AUDIO
 static lv_obj_t *sound_switch = nullptr;
+#endif
 
 static void settings_back_btn_handler(lv_event_t *e) {
     if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
@@ -1475,6 +1557,7 @@ static void settings_brightness_handler(lv_event_t *e) {
     }
 }
 
+#if HAS_AUDIO
 static void settings_sound_handler(lv_event_t *e) {
     if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
         lv_obj_t *sw = lv_event_get_target(e);
@@ -1482,6 +1565,7 @@ static void settings_sound_handler(lv_event_t *e) {
         Serial.printf("Settings: Sound = %s\n", soundEnabled ? "on" : "off");
     }
 }
+#endif
 
 static void settings_wifi_btn_handler(lv_event_t *e) {
     if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
@@ -1553,7 +1637,8 @@ void showSettingsScreen() {
 
     y_offset += isRoundDisplay ? 60 : 70;
 
-    // Sound section
+#if HAS_AUDIO
+    // Sound section (only shown on boards with audio hardware)
     lv_obj_t *sound_label = lv_label_create(current_screen);
     lv_label_set_text(sound_label, "Sound Effects");
     lv_obj_set_style_text_color(sound_label, lv_color_hex(0xCCCCCC), 0);
@@ -1570,6 +1655,7 @@ void showSettingsScreen() {
     lv_obj_add_event_cb(sound_switch, settings_sound_handler, LV_EVENT_VALUE_CHANGED, NULL);
 
     y_offset += isRoundDisplay ? 50 : 60;
+#endif
 
     // WiFi Settings button
     lv_obj_t *wifi_btn = lv_btn_create(current_screen);
@@ -1606,6 +1692,29 @@ void showSettingsScreen() {
         lv_obj_set_style_text_color(info_label, lv_color_hex(0x666666), 0);
         lv_obj_set_style_text_font(info_label, &lv_font_montserrat_12, 0);
         lv_obj_align(info_label, LV_ALIGN_TOP_LEFT, 20, y_offset);
+
+        // Battery info (only on boards with PMU)
+#if HAS_PMU_AXP2101
+        y_offset += 35;
+        lv_obj_t *battery_info = lv_label_create(current_screen);
+        int batteryPercent = pmu_get_battery_percent();
+        uint16_t batteryVoltage = pmu_get_battery_voltage();
+        bool isCharging = pmu_is_charging();
+        bool isUsbConnected = pmu_is_usb_connected();
+
+        char battery_text[64];
+        if (batteryPercent >= 0) {
+            snprintf(battery_text, sizeof(battery_text), "Battery: %d%% (%dmV)%s",
+                     batteryPercent, batteryVoltage, isCharging ? " [Charging]" : "");
+        } else {
+            snprintf(battery_text, sizeof(battery_text), "Battery: %s",
+                     isUsbConnected ? "USB powered" : "Not detected");
+        }
+        lv_label_set_text(battery_info, battery_text);
+        lv_obj_set_style_text_color(battery_info, lv_color_hex(0x666666), 0);
+        lv_obj_set_style_text_font(battery_info, &lv_font_montserrat_12, 0);
+        lv_obj_align(battery_info, LV_ALIGN_TOP_LEFT, 20, y_offset);
+#endif
     }
 
     // Save button at bottom
@@ -1848,97 +1957,71 @@ void showErrorScreen(const char *message) {
 
 // =============================================================================
 // Audio - ES8311 Codec via I2S (only on boards with ES8311)
+// Uses Waveshare ES8311 library and ESP_I2S.h
 // =============================================================================
 #if HAS_AUDIO_ES8311
 
+#include "es8311.h"
+
 static bool audioInitialized = false;
-static const int SAMPLE_RATE = 44100;
-static const int I2S_PORT = I2S_NUM_0;
-
-// ES8311 I2C registers
-#define ES8311_RESET_REG        0x00
-#define ES8311_CLK_MANAGER_REG1 0x01
-#define ES8311_CLK_MANAGER_REG2 0x02
-#define ES8311_CLK_MANAGER_REG3 0x03
-#define ES8311_DAC_REG32        0x32
-#define ES8311_SYSTEM_REG0D     0x0D
-#define ES8311_SYSTEM_REG0E     0x0E
-#define ES8311_SYSTEM_REG12     0x12
-#define ES8311_SYSTEM_REG13     0x13
-
-static bool es8311WriteReg(uint8_t reg, uint8_t value) {
-    Wire.beginTransmission(AUDIO_I2C_ADDR);
-    Wire.write(reg);
-    Wire.write(value);
-    return Wire.endTransmission() == 0;
-}
+static const int SAMPLE_RATE = 16000;
+static I2SClass i2s;
 
 void initAudio() {
     Serial.println("Audio: Initializing ES8311 codec...");
 
-    // Reset ES8311
-    es8311WriteReg(ES8311_RESET_REG, 0x3F);
-    delay(20);
-    es8311WriteReg(ES8311_RESET_REG, 0x00);
-    delay(20);
+    // Enable Power Amplifier FIRST
+    pinMode(SPK_EN, OUTPUT);
+    digitalWrite(SPK_EN, HIGH);
+    Serial.printf("Audio: PA enabled on GPIO%d\n", SPK_EN);
 
-    // Configure clock manager for I2S slave mode
-    es8311WriteReg(ES8311_CLK_MANAGER_REG1, 0x30);  // MCLK from I2S BCLK
-    es8311WriteReg(ES8311_CLK_MANAGER_REG2, 0x10);  // Clock divider
+    // Initialize I2S BEFORE ES8311 (like Waveshare demo)
+    i2s.setPins(I2S_BCLK, I2S_LRCLK, I2S_DIN, I2S_DOUT, I2S_MCLK);
+    if (!i2s.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH)) {
+        Serial.println("Audio: I2S init failed!");
+        return;
+    }
+    Serial.println("Audio: I2S initialized");
 
-    // Enable DAC and analog output
-    es8311WriteReg(ES8311_SYSTEM_REG0D, 0x01);  // Power up analog
-    es8311WriteReg(ES8311_SYSTEM_REG0E, 0x02);  // Enable DAC
-    es8311WriteReg(ES8311_SYSTEM_REG12, 0x00);  // Unmute DAC
-    es8311WriteReg(ES8311_SYSTEM_REG13, 0x10);  // Enable output
+    // Wire.begin RIGHT BEFORE ES8311 init (exactly like Waveshare demo)
+    Wire.begin(I2C_SDA, I2C_SCL);
 
-    // Configure DAC volume
-    es8311WriteReg(ES8311_DAC_REG32, 0xBF);  // Set volume (0xBF = reasonable level)
-
-    // Configure I2S
-    i2s_config_t i2s_config = {
-        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
-        .sample_rate = SAMPLE_RATE,
-        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
-        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 4,
-        .dma_buf_len = 256,
-        .use_apll = false,
-        .tx_desc_auto_clear = true,
-        .fixed_mclk = 0
-    };
-
-    i2s_pin_config_t pin_config = {
-        .mck_io_num = I2S_PIN_NO_CHANGE,
-        .bck_io_num = I2S_BCLK,
-        .ws_io_num = I2S_LRCLK,
-        .data_out_num = I2S_DOUT,
-        .data_in_num = I2S_DIN
-    };
-
-    esp_err_t err = i2s_driver_install((i2s_port_t)I2S_PORT, &i2s_config, 0, NULL);
-    if (err != ESP_OK) {
-        Serial.printf("Audio: I2S driver install failed: %d\n", err);
+    // Initialize ES8311 using Waveshare library
+    es8311_handle_t es_handle = es8311_create(0, ES8311_ADDRRES_0);
+    if (!es_handle) {
+        Serial.println("Audio: ES8311 create failed!");
         return;
     }
 
-    err = i2s_set_pin((i2s_port_t)I2S_PORT, &pin_config);
-    if (err != ESP_OK) {
-        Serial.printf("Audio: I2S pin config failed: %d\n", err);
+    es8311_clock_config_t es_clk = {
+        .mclk_inverted = false,
+        .sclk_inverted = false,
+        .mclk_from_mclk_pin = true,
+        .mclk_frequency = SAMPLE_RATE * 256,
+        .sample_frequency = SAMPLE_RATE
+    };
+
+    if (es8311_init(es_handle, &es_clk, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16) != ESP_OK) {
+        Serial.println("Audio: ES8311 init failed!");
         return;
     }
+
+    // Additional config calls (like Waveshare demo)
+    es8311_sample_frequency_config(es_handle, es_clk.mclk_frequency, es_clk.sample_frequency);
+    es8311_microphone_config(es_handle, false);
+    es8311_voice_volume_set(es_handle, 80, NULL);
+    es8311_microphone_gain_set(es_handle, (es8311_mic_gain_t)3);
+
+    Serial.println("Audio: ES8311 codec initialized");
 
     audioInitialized = true;
-    Serial.println("Audio: ES8311 codec initialized");
 }
 
 void playTone(int frequency, int durationMs) {
     if (!audioInitialized || !soundEnabled) return;
 
     const int numSamples = (SAMPLE_RATE * durationMs) / 1000;
-    const float amplitude = 8000.0f;  // Volume (max 32767 for 16-bit)
+    const float amplitude = 24000.0f;  // Higher volume
     const float twoPiF = 2.0f * PI * frequency / SAMPLE_RATE;
 
     int16_t *samples = (int16_t *)heap_caps_malloc(512 * sizeof(int16_t), MALLOC_CAP_DEFAULT);
@@ -1958,8 +2041,8 @@ void playTone(int frequency, int durationMs) {
             samples[i * 2 + 1] = (int16_t)sample;  // Right
         }
 
-        size_t bytesWritten = 0;
-        i2s_write((i2s_port_t)I2S_PORT, samples, batchSize * 4, &bytesWritten, portMAX_DELAY);
+        // Use ESP_I2S library write method
+        i2s.write((uint8_t *)samples, batchSize * 4);
         samplesWritten += batchSize;
     }
 

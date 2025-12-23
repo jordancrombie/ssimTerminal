@@ -36,13 +36,19 @@ static uint16_t last_y = 0;
 #define FT_REG_FIRM_VER     0xA6
 
 static bool ft_read_reg(uint8_t reg, uint8_t *data, uint8_t len) {
+    // Use separate write and read transactions to avoid ESP32 I2C combined
+    // transaction issues (ESP_ERR_INVALID_STATE errors)
     Wire.beginTransmission(TOUCH_I2C_ADDR);
     Wire.write(reg);
-    if (Wire.endTransmission(false) != 0) {
+    if (Wire.endTransmission(true) != 0) {  // Send STOP, then do separate read
         return false;
     }
 
-    Wire.requestFrom((uint8_t)TOUCH_I2C_ADDR, (uint8_t)len);
+    uint8_t received = Wire.requestFrom((uint8_t)TOUCH_I2C_ADDR, (uint8_t)len);
+    if (received != len) {
+        return false;
+    }
+
     for (uint8_t i = 0; i < len && Wire.available(); i++) {
         data[i] = Wire.read();
     }
@@ -125,14 +131,20 @@ static bool touch_hw_read(uint16_t *x, uint16_t *y, bool *pressed) {
 #define GT911_FIRMWARE_VER  0x8144
 
 static bool gt_read_reg(uint16_t reg, uint8_t *data, uint8_t len) {
+    // Use separate write and read transactions to avoid ESP32 I2C combined
+    // transaction issues (ESP_ERR_INVALID_STATE errors)
     Wire.beginTransmission(TOUCH_I2C_ADDR);
     Wire.write((reg >> 8) & 0xFF);  // High byte
     Wire.write(reg & 0xFF);         // Low byte
-    if (Wire.endTransmission(false) != 0) {
+    if (Wire.endTransmission(true) != 0) {  // Send STOP, then do separate read
         return false;
     }
 
-    Wire.requestFrom((uint8_t)TOUCH_I2C_ADDR, (uint8_t)len);
+    uint8_t received = Wire.requestFrom((uint8_t)TOUCH_I2C_ADDR, (uint8_t)len);
+    if (received != len) {
+        return false;
+    }
+
     for (uint8_t i = 0; i < len && Wire.available(); i++) {
         data[i] = Wire.read();
     }
@@ -259,13 +271,19 @@ static bool touch_hw_read(uint16_t *x, uint16_t *y, bool *pressed) {
 #define TCA9554_OUTPUT_REG      0x01
 
 static bool cst_read_reg(uint8_t reg, uint8_t *data, uint8_t len) {
+    // Use separate write and read transactions to avoid ESP32 I2C combined
+    // transaction issues (ESP_ERR_INVALID_STATE errors)
     Wire.beginTransmission(TOUCH_I2C_ADDR);
     Wire.write(reg);
-    if (Wire.endTransmission(false) != 0) {
+    if (Wire.endTransmission(true) != 0) {  // Send STOP, then do separate read
         return false;
     }
 
-    Wire.requestFrom((uint8_t)TOUCH_I2C_ADDR, (uint8_t)len);
+    uint8_t received = Wire.requestFrom((uint8_t)TOUCH_I2C_ADDR, (uint8_t)len);
+    if (received != len) {
+        return false;
+    }
+
     for (uint8_t i = 0; i < len && Wire.available(); i++) {
         data[i] = Wire.read();
     }

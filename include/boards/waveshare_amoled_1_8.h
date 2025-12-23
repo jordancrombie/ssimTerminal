@@ -60,19 +60,22 @@
 // I/O Expander - TCA9554
 // =============================================================================
 #define EXPANDER_I2C_ADDR       0x20
-#define EXP_PIN_LCD_RST         1
-#define EXP_PIN_TP_RST          2
-#define EXP_PIN_SD_CS           3
+#define EXP_PIN_OLED_EN         0       // P0: OLED enable (must be HIGH for display)
+#define EXP_PIN_LCD_RST         1       // P1: LCD reset
+#define EXP_PIN_TP_RST          2       // P2: Touch panel reset
+#define EXP_PIN_SD_CS           3       // P3: SD card chip select
 
 // =============================================================================
 // Audio - ES8311 Codec
+// Pin assignments from Waveshare demo: 15_ES8311.ino
 // =============================================================================
 #define AUDIO_I2C_ADDR          0x18
-#define I2S_BCLK                45
-#define I2S_LRCLK               46
-#define I2S_DOUT                40
-#define I2S_DIN                 48
-#define SPK_EN                  -1
+#define I2S_MCLK                16      // Master clock
+#define I2S_BCLK                9       // Bit clock
+#define I2S_LRCLK               45      // Word select (WS)
+#define I2S_DOUT                10      // Data out to codec (DOPIN in demo)
+#define I2S_DIN                 8       // Data in from codec (DIPIN in demo)
+#define SPK_EN                  46      // PA (Power Amplifier) enable - MUST be HIGH
 
 // =============================================================================
 // Power Management - AXP2101

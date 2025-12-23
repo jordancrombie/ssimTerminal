@@ -20,7 +20,25 @@
     #error "No board defined! Add -DBOARD_WAVESHARE_AMOLED_1_8, -DBOARD_WAVESHARE_LCD_7, or -DBOARD_WAVESHARE_LCD_1_85C_BOX to build_flags in platformio.ini"
 #endif
 
+// =============================================================================
+// Feature flags (derived from board-specific defines)
+// Use these in application code for conditional compilation
+// =============================================================================
+
+// Audio support - true if any audio hardware is present
+#if HAS_AUDIO_ES8311 || HAS_AUDIO_PCM5101
+    #define HAS_AUDIO 1
+#else
+    #define HAS_AUDIO 0
+#endif
+
+// Future feature flags can be added here:
+// #define HAS_BLE (...)
+// #define HAS_NFC (...)
+
+// =============================================================================
 // Common board interface validation
+// =============================================================================
 #ifndef LCD_WIDTH
     #error "Board config must define LCD_WIDTH"
 #endif
